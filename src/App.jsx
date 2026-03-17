@@ -43,6 +43,8 @@ const PIN_KEY_SUFFIX = '__PIN_V1';
 const UI_SETTINGS_KEY = 'JINY_UI_V1';
 const PBKDF2_ITERATIONS = 120_000;
 const DEFAULT_UI_SETTINGS = { screenSaverEnabled: true, screenSaverIdleMs: 120_000 };
+const IDLE_REWARD_MAX_MS = 8 * 60 * 60 * 1000;
+const IDLE_REWARD_MIN_MS = 30 * 1000;
 
 const getSaveKey = (name) => `${SAVE_PREFIX}${name}`;
 const getPinKey = (name) => `${SAVE_PREFIX}${name}${PIN_KEY_SUFFIX}`;
@@ -60,6 +62,22 @@ const readUiSettings = () => {
   } catch {
     return DEFAULT_UI_SETTINGS;
   }
+};
+
+const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const applyExpOffline = (playerData, expAmount) => {
+  let nextLevel = playerData.level || 1;
+  let nextExp = (playerData.exp || 0) + expAmount;
+  let nextTraitPoints = playerData.traitPoints || 0;
+
+  while (nextExp >= getReqExp(nextLevel)) {
+    nextExp -= getReqExp(nextLevel);
+    nextLevel += 1;
+    nextTraitPoints += 3;
+  }
+
+  return { level: nextLevel, exp: nextExp, traitPoints: nextTraitPoints };
 };
 
 const bytesToBase64 = (bytes) => {
@@ -276,6 +294,7 @@ export default function App() {
   const [pvpOpponent, setPvpOpponent] = useState(null);
   const [pvpResult, setPvpResult] = useState(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [pvpHistory, setPvpHistory] = useState([]);
 
   // --- Local PIN (Optional) ---
   const [pendingLogin, setPendingLogin] = useState(null); // { name, data }
@@ -293,6 +312,9 @@ export default function App() {
   const [feedbackItems, setFeedbackItems] = useState([]);
   const [feedbackDraft, setFeedbackDraft] = useState('');
   const [isPostingFeedback, setIsPostingFeedback] = useState(false);
+
+  // --- Idle Rewards ---
+  const [idleRewardSummary, setIdleRewardSummary] = useState(null);
 
   // --- Idle Mining State ---
   const [isMining, setIsMining] = useState(false);
@@ -364,21 +386,71 @@ export default function App() {
   };
 
   const loadGameFromSave = (data) => {
+    const now = Date.now();
+    const lastSavedAt = Number(data.lastSavedAt || data.savedAt || 0);
+    const rawElapsedMs = lastSavedAt > 0 ? now - lastSavedAt : 0;
+    const eligibleMs = clampNumber(rawElapsedMs, 0, IDLE_REWARD_MAX_MS);
+    const shouldReward = eligibleMs >= IDLE_REWARD_MIN_MS;
+
     const nextStage = data.stage || 0;
     const nextBossHp = typeof data.bossHp === 'number' ? data.bossHp : getBossConfig(nextStage).maxHp;
 
-    setGold(data.gold);
-    setStones(data.stones);
+    const baseGold = Number(data.gold || 0);
+    const baseStones = Number(data.stones || 0);
+    const basePlayerData = data.playerData || { level: 1, exp: 0, traitPoints: 0 };
+    const baseStatistics = { ...DEFAULT_STATS, ...(data.statistics || {}) };
+
+    let bonusGold = 0;
+    let bonusStones = 0;
+    let bonusExp = 0;
+
+    if (shouldReward) {
+      const minutes = eligibleMs / 60_000;
+      const buffs = getActiveBuffs(data.traits || [], data.allocatedStats || { ATTACK: 0, SUCCESS: 0, CRIT: 0, WEALTH: 0 }, data.achievementLevels || {}, data.relics || { DAMAGE: 0, GOLD: 0 });
+      const farmBonus = buffs.filter(b => b.effect === 'farm_bonus').reduce((acc, b) => acc * b.value, 1);
+
+      const stageBonus = 10 + (nextStage * 3);
+      const powerBonus = Math.max(0, Math.floor(((basePlayerData.level || 1) * 2) + (Number(data.equipment?.weapon || 0) * 4)));
+      const goldPerMin = Math.max(15, stageBonus + powerBonus);
+
+      bonusGold = Math.floor(goldPerMin * farmBonus * minutes);
+      bonusStones = Math.floor(minutes / 12);
+      bonusExp = Math.floor(bonusGold / 2);
+
+      setIdleRewardSummary({
+        minutes: Math.floor(eligibleMs / 60_000),
+        gold: bonusGold,
+        stones: bonusStones,
+        exp: bonusExp,
+        capped: rawElapsedMs > IDLE_REWARD_MAX_MS
+      });
+      setActiveModal('idle_rewards');
+      addLog(`[방치 보상] ${Math.floor(eligibleMs / 60_000)}분`, 'success');
+    } else {
+      setIdleRewardSummary(null);
+    }
+
+    const nextGold = baseGold + bonusGold;
+    const nextStones = baseStones + bonusStones;
+    const nextPlayerData = bonusExp > 0 ? applyExpOffline(basePlayerData, bonusExp) : basePlayerData;
+    const nextStatistics = {
+      ...baseStatistics,
+      totalGoldEarned: Number(baseStatistics.totalGoldEarned || 0) + bonusGold
+    };
+
+    setGold(nextGold);
+    setStones(nextStones);
     setSoulStones(data.soulStones || 0);
-    setPlayerData(data.playerData);
+    setPlayerData(nextPlayerData);
     setEquipment(data.equipment);
     setAppraisals(data.appraisals);
     setAllocatedStats(data.allocatedStats);
     setTraits(data.traits || []);
     setRelics(data.relics || { DAMAGE: 0, GOLD: 0 });
     setFailStack(data.failStack || 0);
-    setStatistics({ ...DEFAULT_STATS, ...(data.statistics || {}) });
+    setStatistics(nextStatistics);
     setAchievementLevels(data.achievementLevels || {});
+    setPvpHistory(Array.isArray(data.pvpHistory) ? data.pvpHistory : []);
 
     suppressBossHpResetRef.current = true;
     setStage(nextStage);
@@ -678,13 +750,13 @@ export default function App() {
 
   useEffect(() => {
     if (appState === 'playing' && playerName) {
-      const stateToSave = { gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp };
+      const stateToSave = { gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp, pvpHistory, lastSavedAt: Date.now() };
       const handle = setTimeout(() => {
         localStorage.setItem(getSaveKey(playerName), JSON.stringify(stateToSave));
       }, 500);
       return () => clearTimeout(handle);
     }
-  }, [appState, playerName, gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp]);
+  }, [appState, playerName, gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp, pvpHistory]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -716,7 +788,11 @@ export default function App() {
   useEffect(() => {
     if (!user || isOfflineMode) return;
 
-    const q = collection(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks');
+    const q = query(
+      collection(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks'),
+      orderBy('arenaPoints', 'desc'),
+      limit(50)
+    );
     const unsub = onSnapshot(
       q,
       (snapshot) => {
@@ -728,7 +804,7 @@ export default function App() {
               (b.arenaPoints || 0) - (a.arenaPoints || 0) ||
               (b.combatPower || 0) - (a.combatPower || 0)
             )
-            .slice(0, 10)
+            .slice(0, 50)
         );
       },
       (err) => {
@@ -961,27 +1037,40 @@ export default function App() {
   };
 
   const quickMatch = () => {
-    const candidates = (rankings || []).filter(rk => rk && rk.uid && rk.uid !== user?.uid);
-    const withinRange = candidates.filter(rk => {
-      const cp = Number(rk.combatPower || 0);
-      if (cp <= 0) return false;
-      return cp >= myCombatPower * 0.7 && cp <= myCombatPower * 1.3;
-    });
+    if (isOfflineMode) return addLog('[PvP] 오프라인 모드에서는 매칭할 수 없습니다.', 'danger');
 
-    const pool = withinRange.length > 0 ? withinRange : candidates;
-    if (pool.length === 0) {
+    const myAp = Number(statistics.arenaPoints || 0);
+    const candidates = (rankings || []).filter(rk => rk && rk.uid && rk.uid !== user?.uid);
+
+    const scored = candidates
+      .map((rk) => {
+        const ap = Number(rk.arenaPoints || 0);
+        const cp = Number(rk.combatPower || 0);
+        const apDiff = Math.abs(ap - myAp);
+        const cpDiff = Math.abs(cp - myCombatPower) / Math.max(1, myCombatPower);
+        const score = apDiff + (cpDiff * 200);
+        return { rk, score, apDiff };
+      })
+      .sort((a, b) => a.score - b.score);
+
+    const pool = scored.filter(s => s.apDiff <= 200).slice(0, 7);
+    const chosen = (pool.length > 0 ? pool : scored.slice(0, 7))[Math.floor(Math.random() * Math.min(7, Math.max(1, scored.length)))];
+
+    if (!chosen) {
+      const botAp = Math.max(0, Math.floor(myAp + (Math.random() * 300 - 150)));
       const bot = {
         uid: `bot_${Date.now()}`,
         name: 'WANDERER',
         level: Math.max(1, Math.floor(playerData.level * (0.8 + Math.random() * 0.4))),
         weaponLevel: Math.max(0, Math.floor(equipment.weapon * (0.7 + Math.random() * 0.6))),
         combatPower: Math.max(1, Math.floor(myCombatPower * (0.75 + Math.random() * 0.5))),
-        arenaPoints: 1000
+        arenaPoints: botAp
       };
       setPvpOpponent(bot);
     } else {
-      setPvpOpponent(pool[Math.floor(Math.random() * pool.length)]);
+      setPvpOpponent(chosen.rk);
     }
+
     setPvpResult(null);
     setActiveModal('pvp_clash');
   };
@@ -1047,6 +1136,20 @@ export default function App() {
       arenaPoints: Math.max(0, (s.arenaPoints || 0) + pointDelta),
       lastPvpAt: nextLast
     }));
+
+    setPvpHistory((prev) => {
+      const entry = {
+        at: nextLast,
+        opponentUid: String(pvpOpponent.uid || ''),
+        opponentName: String(pvpOpponent.name || 'OPPONENT'),
+        isWin,
+        myRoll: Math.floor(myRoll),
+        oppRoll: Math.floor(oppRoll),
+        pointDelta,
+        rewardGold
+      };
+      return [entry, ...(Array.isArray(prev) ? prev : [])].slice(0, 20);
+    });
 
     if (isWin) addLog(`VICTORY +${pointDelta} AP / +${rewardGold}G`, 'success');
     else addLog(`DEFEAT ${pointDelta} AP`, 'danger');
@@ -1593,6 +1696,50 @@ export default function App() {
         </div>
       )}
 
+      {activeModal === 'idle_rewards' && idleRewardSummary && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => { setActiveModal(null); setIdleRewardSummary(null); }}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => { setActiveModal(null); setIdleRewardSummary(null); }} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <div className="flex items-center gap-3 mb-4">
+              <Sparkles className="w-7 h-7 text-yellow-400" />
+              <h2 className="text-2xl font-black">방치 보상</h2>
+            </div>
+
+            <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-4">
+              <div className="flex justify-between text-sm font-bold">
+                <span className="text-zinc-400">누적 시간</span>
+                <span className="text-zinc-200 font-mono">{Number(idleRewardSummary.minutes || 0).toLocaleString()}분</span>
+              </div>
+              {idleRewardSummary.capped && (
+                <div className="text-[11px] text-zinc-600 mt-2">최대 {Math.floor(IDLE_REWARD_MAX_MS / 3_600_000)}시간까지만 보상이 계산됩니다.</div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 mb-6">
+              <div className="bg-black/40 border border-zinc-800 rounded-2xl p-3 text-center">
+                <Coins className="w-4 h-4 text-yellow-500 mx-auto mb-1" />
+                <div className="text-[10px] text-zinc-500 font-black">GOLD</div>
+                <div className="text-sm font-black font-mono text-zinc-200">+{Number(idleRewardSummary.gold || 0).toLocaleString()}</div>
+              </div>
+              <div className="bg-black/40 border border-zinc-800 rounded-2xl p-3 text-center">
+                <Gem className="w-4 h-4 text-cyan-400 mx-auto mb-1" />
+                <div className="text-[10px] text-zinc-500 font-black">STONES</div>
+                <div className="text-sm font-black font-mono text-zinc-200">+{Number(idleRewardSummary.stones || 0).toLocaleString()}</div>
+              </div>
+              <div className="bg-black/40 border border-zinc-800 rounded-2xl p-3 text-center">
+                <TrendingUp className="w-4 h-4 text-green-400 mx-auto mb-1" />
+                <div className="text-[10px] text-zinc-500 font-black">EXP</div>
+                <div className="text-sm font-black font-mono text-zinc-200">+{Number(idleRewardSummary.exp || 0).toLocaleString()}</div>
+              </div>
+            </div>
+
+            <button onClick={() => { setActiveModal(null); setIdleRewardSummary(null); }} className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-black">
+              확인
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 4. PvP Rankings & Clash Modals */}
       {activeModal === 'pvp' && (
         <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
@@ -1606,13 +1753,40 @@ export default function App() {
                 <span className="text-red-300 font-mono">{Number(statistics.arenaPoints || 0).toLocaleString()}</span>
               </div>
               <div className="flex items-center justify-between text-[11px] text-zinc-500 mt-1">
-                <span>W/L</span>
-                <span className="font-mono">{Number(statistics.pvpWins || 0)} / {Number(statistics.pvpLosses || 0)}</span>
+                <span>W/L · Rank</span>
+                <span className="font-mono">
+                  {Number(statistics.pvpWins || 0)} / {Number(statistics.pvpLosses || 0)}
+                  {user ? ` · #${Math.max(1, rankings.findIndex(r => r?.uid === user.uid) + 1)}` : ''}
+                </span>
               </div>
               <button onClick={quickMatch} disabled={isAnimating} className="w-full mt-3 py-3 bg-red-950/60 hover:bg-red-900 rounded-xl font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50">
                 {isAnimating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" />} Quick Match
               </button>
             </div>
+
+            {pvpHistory.length > 0 && (
+              <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[10px] font-black text-zinc-500 uppercase">Recent Matches</div>
+                  <div className="text-[10px] text-zinc-600">{pvpHistory.length}/20</div>
+                </div>
+                <div className="space-y-2 max-h-40 overflow-y-auto pr-1 custom-scrollbar">
+                  {pvpHistory.slice(0, 6).map((h) => (
+                    <div key={String(h.at)} className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`font-black ${h.isWin ? 'text-yellow-400' : 'text-zinc-500'}`}>{h.isWin ? 'W' : 'L'}</span>
+                        <span className="text-zinc-300 truncate">{String(h.opponentName || 'OPPONENT')}</span>
+                        <span className="text-[10px] text-zinc-600 font-mono">{h.at ? new Date(Number(h.at)).toLocaleTimeString([], { hour12: false }) : ''}</span>
+                      </div>
+                      <div className="font-mono text-[11px]">
+                        <span className={h.pointDelta >= 0 ? 'text-green-400' : 'text-red-400'}>{h.pointDelta >= 0 ? `+${h.pointDelta}` : `${h.pointDelta}`}</span>
+                        <span className="text-zinc-600"> AP</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             
             {isOfflineMode ? (
               <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-500 p-4 rounded-xl text-sm text-center mb-4">
