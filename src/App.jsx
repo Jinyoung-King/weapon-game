@@ -1,626 +1,1165 @@
-import React, { useState, useEffect, useRef } from 'react';
+/* global __firebase_config, __app_id, __initial_auth_token */
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Sword, Coins, Gem, Hammer, Pickaxe, AlertCircle, Sparkles, Flame, 
   ScrollText, Loader2, BrainCircuit, Shield, Ghost, Skull, ShieldAlert, 
   Crown, Target, Trophy, BarChart3, User, CheckCircle2, Circle, X, 
   Zap, ArrowUpCircle, Swords, Medal, Music, PlusCircle, TrendingUp, 
-  Crosshair, Shirt, Infinity 
+  Crosshair, Shirt, Infinity as InfinityIcon, Settings, Save, Trash2, Cloud, Users, MessageSquare,
+  ZapOff, Timer
 } from 'lucide-react';
-
-/**
- * [Architectural Note]
- * 이 게임은 Data-Driven Design을 기반으로 합니다. 모든 확률, 비용, 스탯 가중치는 
- * 하단의 Configuration 섹션에서 관리되며, 핵심 로직은 순수 함수(Pure Function)를 통해 
- * 부작용(Side-effect) 없이 연산됩니다. (Open-Closed Principle 준수)
- */
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, addDoc, query, orderBy, limit, serverTimestamp, onSnapshot } from 'firebase/firestore';
 
 // ==========================================
-// 1. Configuration (게임 데이터 설정)
+// 1. Constants & Configurations (Firebase Settings)
 // ==========================================
-const MAX_LEVEL = 25;
+
+// TODO: 본인의 Firebase 콘솔에서 발급받은 설정값을 아래에 붙여넣으세요.
+const localFirebaseConfig = {
+  apiKey: "AIzaSyAoCTTBL4BnQCKYKvsoAI1Ok4eEsrMeqXg",
+  authDomain: "weapon-game-4c382.firebaseapp.com",
+  projectId: "weapon-game-4c382",
+  storageBucket: "weapon-game-4c382.firebasestorage.app",
+  messagingSenderId: "40692170716",
+  appId: "1:40692170716:web:7bb9a609c9ccfc634d9919",
+  measurementId: "G-C1GVWLZJMW"
+};
+
+
+// Canvas 샌드박스 환경 변수가 존재하면 우선 사용하고, 로컬 환경이면 localFirebaseConfig를 사용합니다.
+const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config 
+  ? JSON.parse(__firebase_config) 
+  : localFirebaseConfig;
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'jiny-weapon-soul-v4';
+
+const SAVE_PREFIX = 'JINY_SAVE_V4_';
+const PIN_KEY_SUFFIX = '__PIN_V1';
+const UI_SETTINGS_KEY = 'JINY_UI_V1';
+const PBKDF2_ITERATIONS = 120_000;
+const DEFAULT_UI_SETTINGS = { screenSaverEnabled: true, screenSaverIdleMs: 120_000 };
+
+const getSaveKey = (name) => `${SAVE_PREFIX}${name}`;
+const getPinKey = (name) => `${SAVE_PREFIX}${name}${PIN_KEY_SUFFIX}`;
+const isValidPin = (pin) => typeof pin === 'string' && /^\d{4,12}$/.test(pin);
+
+const readUiSettings = () => {
+  try {
+    const raw = localStorage.getItem(UI_SETTINGS_KEY);
+    if (!raw) return DEFAULT_UI_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return {
+      screenSaverEnabled: Boolean(parsed?.screenSaverEnabled ?? DEFAULT_UI_SETTINGS.screenSaverEnabled),
+      screenSaverIdleMs: Math.max(10_000, Number(parsed?.screenSaverIdleMs ?? DEFAULT_UI_SETTINGS.screenSaverIdleMs) || DEFAULT_UI_SETTINGS.screenSaverIdleMs)
+    };
+  } catch {
+    return DEFAULT_UI_SETTINGS;
+  }
+};
+
+const bytesToBase64 = (bytes) => {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+};
+
+const base64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+const getStoredPinRecord = (name) => {
+  try {
+    const raw = localStorage.getItem(getPinKey(name));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof parsed.salt !== 'string' || typeof parsed.hash !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const hashPin = async (pin, saltB64) => {
+  const subtle = globalThis?.crypto?.subtle;
+  if (!subtle) throw new Error('WebCrypto not available');
+
+  const salt = saltB64 ? base64ToBytes(saltB64) : globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const pinBytes = new TextEncoder().encode(pin);
+
+  const keyMaterial = await subtle.importKey('raw', pinBytes, 'PBKDF2', false, ['deriveBits']);
+  const bits = await subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial,
+    256
+  );
+
+  return { salt: bytesToBase64(salt), hash: bytesToBase64(new Uint8Array(bits)) };
+};
+
+const verifyPin = async (pin, record) => {
+  const { salt, hash } = await hashPin(pin, record.salt);
+  return salt === record.salt && hash === record.hash;
+};
+
+const MAX_LEVEL = 30;
 
 const ENHANCE_TIERS = [
   { threshold: 5, success: 100, drop: 0, destroy: 0, gold: 100, stone: 1, color: 'text-gray-300', glow: 'shadow-gray-500/50' },
   { threshold: 10, success: 85, drop: 0, destroy: 0, gold: 500, stone: 3, color: 'text-green-400', glow: 'shadow-green-500/50' },
   { threshold: 15, success: 55, drop: 15, destroy: 0, gold: 1500, stone: 5, color: 'text-blue-400', glow: 'shadow-blue-500/50' },
   { threshold: 20, success: 35, drop: 30, destroy: 5, gold: 5000, stone: 10, color: 'text-purple-500', glow: 'shadow-purple-500/50' },
-  { threshold: 25, success: 15, drop: 40, destroy: 15, gold: 20000, stone: 25, color: 'text-red-500', glow: 'shadow-red-500/70' }
+  { threshold: 30, success: 15, drop: 40, destroy: 15, gold: 25000, stone: 30, color: 'text-red-500', glow: 'shadow-red-500/70' }
 ];
 
 const APPRAISAL_GRADES = [
   { id: 'NORMAL', name: '일반', mult: 1.0, color: 'text-gray-400', reqRoll: 0 },
-  { id: 'RARE', name: '희귀', mult: 1.2, color: 'text-blue-400', reqRoll: 50 },
-  { id: 'EPIC', name: '영웅', mult: 1.5, color: 'text-purple-500', reqRoll: 80 },
-  { id: 'LEGENDARY', name: '전설', mult: 2.0, color: 'text-yellow-400', reqRoll: 100 },
-  { id: 'MYTHIC', name: '신화', mult: 3.5, color: 'text-red-500', reqRoll: 125 }
+  { id: 'RARE', name: '희귀', mult: 1.25, color: 'text-blue-400', reqRoll: 40 },
+  { id: 'EPIC', name: '영웅', mult: 1.6, color: 'text-purple-500', reqRoll: 75 },
+  { id: 'LEGENDARY', name: '전설', mult: 2.2, color: 'text-yellow-400', reqRoll: 95 },
+  { id: 'MYTHIC', name: '신화', mult: 4.5, color: 'text-red-500', reqRoll: 120 }
 ];
 
 const EQUIP_TYPES = {
-  weapon: { id: 'weapon', name: '무기', icon: Sword, desc: '공격력 상승' },
-  armor: { id: 'armor', name: '방어구', icon: Shirt, desc: '투기장 피해 감소 및 확률 보정' },
-  ring: { id: 'ring', name: '반지', icon: Circle, desc: '자원 획득량 증가' }
-};
-
-const RELICS_CONFIG = {
-  DAMAGE: { id: 'DAMAGE', name: '고대 투신의 검집', desc: '최종 데미지 +15%', effect: 'damage_bonus', valuePerLevel: 0.15, max: 10, costBase: 1, costMult: 2, icon: Sword },
-  GOLD: { id: 'GOLD', name: '황금 고블린의 자루', desc: '획득 골드 +30%', effect: 'farm_bonus', valuePerLevel: 0.3, max: 10, costBase: 1, costMult: 2, icon: Coins },
-  SUCCESS: { id: 'SUCCESS', name: '시간의 톱니바퀴', desc: '강화 확률 +3%p', effect: 'success_bonus', valuePerLevel: 3, max: 10, costBase: 2, costMult: 2, icon: Hammer }
+  weapon: { id: 'weapon', name: '무기', icon: Sword },
+  armor: { id: 'armor', name: '방어구', icon: Shirt },
+  ring: { id: 'ring', name: '반지', icon: Circle }
 };
 
 const TRAITS = {
   MINER: { id: 'MINER', name: '광부의 인내', desc: '채굴 골드 20% 증가', effect: 'farm_bonus', value: 1.2, color: 'text-yellow-400' },
   ARTISAN: { id: 'ARTISAN', name: '장인의 혼', desc: '강화 확률 5%p 증가', effect: 'success_bonus', value: 5, color: 'text-green-400' },
   SURVIVOR: { id: 'SURVIVOR', name: '불굴의 의지', desc: '실패 페널티 5%p 감소', effect: 'safety_bonus', value: 5, color: 'text-blue-400' },
-  WARRIOR: { id: 'WARRIOR', name: '전사의 심장', desc: '최종 데미지 20% 증가', effect: 'damage_bonus', value: 1.2, color: 'text-red-400' },
-  LUCKY: { id: 'LUCKY', name: '행운아', desc: '크리티컬 확률 15%p 증가', effect: 'crit_chance_bonus', value: 0.15, color: 'text-emerald-400' },
-  GREEDY: { id: 'GREEDY', name: '탐욕', desc: '보스 보상 30% 증가', effect: 'boss_reward_bonus', value: 1.3, color: 'text-amber-500' },
-  STEADY: { id: 'STEADY', name: '평정심', desc: '강화석 확률 10%p 증가', effect: 'stone_drop_bonus', value: 0.1, color: 'text-teal-400' }
-};
-
-const UNLOCKABLE_TRAITS = [
-  { id: 'BERSERKER', name: '광전사', desc: '크리티컬 데미지 배율 +50%p', condition: (s) => s.bossesDefeated >= 10, effect: 'crit_damage_bonus', value: 0.5, color: 'text-red-600' },
-  { id: 'MILLIONAIRE', name: '백만장자', desc: '강화 성공 확률 +10%p', condition: (s) => s.totalGoldEarned >= 1000000, effect: 'success_bonus', value: 10, color: 'text-yellow-300' },
-  { id: 'MAD_CLICKER', name: '광기의 손가락', desc: '최종 데미지 30% 증가', condition: (s) => s.totalClicks >= 500, effect: 'damage_bonus', value: 1.3, color: 'text-fuchsia-400' },
-  { id: 'REBORN', name: '초월자', desc: '강화석 확률 +15%p', condition: (s) => s.rebirthCount > 0, effect: 'stone_drop_bonus', value: 0.15, color: 'text-purple-400' }
-];
-
-const CUSTOM_STATS_CONFIG = {
-  ATTACK: { id: 'ATTACK', name: '근력', desc: '데미지 +2%', effect: 'damage_bonus', valuePerPoint: 0.02, maxLevel: 50, icon: Sword },
-  SUCCESS: { id: 'SUCCESS', name: '손재주', desc: '강화 확률 +0.5%p', effect: 'success_bonus', valuePerPoint: 0.5, maxLevel: 50, icon: Hammer },
-  CRIT: { id: 'CRIT', name: '통찰력', desc: '크리티컬 확률 +1%p', effect: 'crit_chance_bonus', valuePerPoint: 0.01, maxLevel: 50, icon: Target },
-  CRIT_DMG: { id: 'CRIT_DMG', name: '치명', desc: '크리티컬 데미지 +5%p', effect: 'crit_damage_bonus', valuePerPoint: 0.05, maxLevel: 50, icon: Crosshair },
-  WEALTH: { id: 'WEALTH', name: '매력', desc: '획득 골드 +5%', effect: 'farm_bonus', valuePerPoint: 0.05, maxLevel: 50, icon: Coins }
+  WARRIOR: { id: 'WARRIOR', name: '전사의 심장', desc: '최종 데미지 20% 증가', effect: 'damage_bonus', value: 1.2, color: 'text-red-400' }
 };
 
 const PERSONALITY_QUESTIONS = [
-  { text: "[질문 1/2] 낡은 대장간 구석에서 심상치 않은 광석을 발견했습니다. 다음 행동은?", answers: [ { text: "창고에 보관하고 채굴에 집중한다.", trait: TRAITS.MINER }, { text: "가장 아끼는 망치를 들어 제련한다.", trait: TRAITS.ARTISAN }, { text: "쓰는 무기에 광석을 강제로 융합시킨다.", trait: TRAITS.SURVIVOR }, { text: "광석을 대검에 박고 돌진한다.", trait: TRAITS.WARRIOR } ] },
-  { text: "[질문 2/2] 빛나는 3개의 보물상자가 나타났습니다. 어떤 방식을 선택하시겠습니까?", answers: [ { text: "가장 화려해 보이는 상자를 고른다.", trait: TRAITS.LUCKY }, { text: "세 상자를 모두 챙긴다.", trait: TRAITS.GREEDY }, { text: "튼튼해 보이는 상자를 하나만 연다.", trait: TRAITS.STEADY } ] }
+  { text: "[질문 1/4] 낡은 대장간에서 심상치 않은 광석을 발견했습니다. 다음 행동은?", answers: [ { text: "창고에 보관하고 채굴에 집중한다.", trait: TRAITS.MINER }, { text: "아끼는 망치를 들어 제련한다.", trait: TRAITS.ARTISAN } ] },
+  { text: "[질문 2/4] 전투 중 절체절명의 위기! 당신의 선택은?", answers: [ { text: "방패를 굳게 쥐고 버틴다.", trait: TRAITS.SURVIVOR }, { text: "모든 힘을 쥐어짜내 공격한다.", trait: TRAITS.WARRIOR } ] },
+  { text: "[질문 3/4] 광산 갱도에서 붕괴가 시작됩니다. 가장 먼저 하는 행동은?", answers: [ { text: "광석 주머니를 꽉 쥐고 출구를 찾는다.", trait: TRAITS.MINER }, { text: "동료를 붙잡고 안전한 길을 만든다.", trait: TRAITS.SURVIVOR } ] },
+  { text: "[질문 4/4] 강력한 적이 눈앞에 나타났습니다. 준비하는 방식은?", answers: [ { text: "무기 균형을 다시 맞추고 완벽을 추구한다.", trait: TRAITS.ARTISAN }, { text: "기회를 기다리지 않고 선제 공격한다.", trait: TRAITS.WARRIOR } ] }
 ];
 
+const CUSTOM_STATS_CONFIG = {
+  ATTACK: { id: 'ATTACK', name: '근력', desc: '데미지 +3%', valuePerPoint: 0.03, maxLevel: 100, icon: Sword },
+  SUCCESS: { id: 'SUCCESS', name: '손재주', desc: '강화 확률 +0.3%p', valuePerPoint: 0.3, maxLevel: 100, icon: Hammer },
+  CRIT: { id: 'CRIT', name: '통찰력', desc: '크리티컬 확률 +1%p', valuePerPoint: 0.01, maxLevel: 100, icon: Target },
+  WEALTH: { id: 'WEALTH', name: '매력', desc: '골드 획득 +5%', valuePerPoint: 0.05, maxLevel: 100, icon: Coins }
+};
+
 const ACHIEVEMENTS_CONFIG = [
-  { id: 'boss_slayer', name: '학살자', descPrefix: '보스', thresholds: [1, 5, 20, 50, 100], getDesc: (t) => `보스 ${t}마리 처치`, effect: 'damage_bonus', baseValue: 1.05, valuePerTier: 0.05, icon: Skull },
-  { id: 'rich', name: '재벌', descPrefix: '누적 골드', thresholds: [50000, 200000, 1000000, 5000000], getDesc: (t) => `누적 ${t.toLocaleString()}G 획득`, effect: 'safety_bonus', baseValue: 3, valuePerTier: 2, icon: Coins },
-  { id: 'arena', name: '검투사', descPrefix: '투기장 승리', thresholds: [1, 10, 50, 100], getDesc: (t) => `투기장 ${t}승`, effect: 'crit_damage_bonus', baseValue: 0.1, valuePerTier: 0.1, icon: Swords },
-  { id: 'clicker', name: '행동대장', descPrefix: '누적 행동', thresholds: [100, 500, 2000, 10000], getDesc: (t) => `행동 ${t}회`, effect: 'stone_drop_bonus', baseValue: 0.05, valuePerTier: 0.02, icon: Pickaxe }
+  { id: 'boss_slayer', name: '학살자', descPrefix: '보스 처치', thresholds: [1, 5, 20, 50], getDesc: (t) => `보스 ${t}마리 처치`, effect: 'damage_bonus', baseValue: 1.05, valuePerTier: 0.05, icon: Skull },
+  { id: 'rich', name: '재벌', descPrefix: '누적 골드', thresholds: [50000, 200000, 1000000], getDesc: (t) => `누적 ${t.toLocaleString()}G`, effect: 'safety_bonus', baseValue: 3, valuePerTier: 2, icon: Coins },
+  { id: 'clicker', name: '행동대장', descPrefix: '누적 행동', thresholds: [100, 500, 2000], getDesc: (t) => `행동 ${t}회`, effect: 'stone_drop_bonus', baseValue: 0.05, valuePerTier: 0.02, icon: Pickaxe }
 ];
+
+const RELICS_CONFIG = {
+  DAMAGE: { id: 'DAMAGE', name: '고대 투신의 검집', desc: '최종 데미지 +15%', effect: 'damage_bonus', valuePerLevel: 0.15, max: 10, costBase: 1, costMult: 2, icon: Sword },
+  GOLD: { id: 'GOLD', name: '황금 고블린의 자루', desc: '획득 골드 +30%', effect: 'farm_bonus', valuePerLevel: 0.3, max: 10, costBase: 1, costMult: 2, icon: Coins }
+};
 
 const BOSS_LIST = [
   { name: '떠돌이 고블린', icon: Ghost, maxHp: 150, rewardGold: 300, rewardStone: 2, color: 'text-green-500' },
   { name: '동굴 트롤', icon: Skull, maxHp: 800, rewardGold: 1000, rewardStone: 5, color: 'text-gray-400' },
   { name: '타락한 기사', icon: ShieldAlert, maxHp: 3500, rewardGold: 4000, rewardStone: 12, color: 'text-blue-500' },
-  { name: '화염의 드래곤', icon: Flame, maxHp: 15000, rewardGold: 15000, rewardStone: 30, color: 'text-red-500' },
-  { name: '심연의 군주', icon: Crown, maxHp: 80000, rewardGold: 50000, rewardStone: 100, color: 'text-purple-600' }
+  { name: '화염의 드래곤', icon: Flame, maxHp: 15000, rewardGold: 15000, rewardStone: 30, color: 'text-red-500' }
 ];
 
 // ==========================================
-// 2. Pure Functions (로직 연산 및 파이프라인)
+// 2. Pure Functions & Generators
 // ==========================================
-
-// 버프 통합 파이프라인 (Composite Pattern)
-const getActiveBuffs = (traits, dynamicTraits, achievementLevels, allocatedStats, tavernBuffs, equipment, relics) => {
-  const achBuffs = Object.entries(achievementLevels).map(([id, tier]) => {
-    const ach = ACHIEVEMENTS_CONFIG.find(a => a.id === id);
-    if (!ach || tier === 0) return null;
-    return { effect: ach.effect, value: ach.baseValue + (ach.valuePerTier * (tier - 1)) };
-  }).filter(Boolean);
-  
-  const allocBuffs = Object.entries(allocatedStats).map(([id, level]) => {
-    if (level === 0) return null;
-    const config = CUSTOM_STATS_CONFIG[id];
-    let val = level * config.valuePerPoint;
-    if (config.effect === 'damage_bonus' || config.effect === 'farm_bonus') val += 1; // 배율(Multiplier) 처리
-    return { effect: config.effect, value: val };
-  }).filter(Boolean);
-
-  const tavernBuffList = [];
-  if (tavernBuffs.damage > 0) tavernBuffList.push({ effect: 'damage_bonus', value: 1 + (tavernBuffs.damage * 0.03) }); 
-  if (tavernBuffs.gold > 0) tavernBuffList.push({ effect: 'farm_bonus', value: 1 + (tavernBuffs.gold * 0.08) }); 
-
-  const equipBuffs = [];
-  if (equipment.armor > 0) equipBuffs.push({ effect: 'success_bonus', value: equipment.armor * 0.5 }); // 방어구: 강화 확률 보정
-  if (equipment.ring > 0) {
-    equipBuffs.push({ effect: 'farm_bonus', value: 1 + (equipment.ring * 0.05) }); // 반지: 골드 획득
-    equipBuffs.push({ effect: 'stone_drop_bonus', value: equipment.ring * 0.02 }); // 반지: 강화석 획득
-  }
-
-  const relicBuffs = Object.entries(relics).map(([id, level]) => {
-    if (level === 0) return null;
-    const config = RELICS_CONFIG[id];
-    let val = level * config.valuePerLevel;
-    if (config.effect === 'damage_bonus' || config.effect === 'farm_bonus') val += 1;
-    return { effect: config.effect, value: val };
-  }).filter(Boolean);
-
-  return [...traits, ...dynamicTraits, ...achBuffs, ...allocBuffs, ...tavernBuffList, ...equipBuffs, ...relicBuffs];
-};
-
-const getTierConfig = (level) => ENHANCE_TIERS.find(tier => level < tier.threshold) || ENHANCE_TIERS[ENHANCE_TIERS.length - 1];
-
-const getEffectiveTierConfig = (level, activeBuffs, failStack, playerLevel) => {
-  const baseConfig = getTierConfig(level);
-  if (!activeBuffs || activeBuffs.length === 0) return { ...baseConfig, failStackBonus: 0, levelBonus: 0 };
-
-  const successBonus = activeBuffs.filter(b => b.effect === 'success_bonus').reduce((acc, b) => acc + b.value, 0);
-  const safetyBonus = activeBuffs.filter(b => b.effect === 'safety_bonus').reduce((acc, b) => acc + b.value, 0);
-  
-  const failStackBonus = failStack * 2;
-  const levelBonus = (playerLevel - 1) * 0.5; // 레벨당 0.5%p 성공 확률 보정
-
-  // Boundary Value Analysis: 확률 경계값(0~100) 방어
-  return { 
-    ...baseConfig, 
-    success: Math.min(100, baseConfig.success + successBonus + failStackBonus + levelBonus), 
-    drop: Math.max(0, baseConfig.drop - safetyBonus), 
-    destroy: Math.max(0, baseConfig.destroy - safetyBonus),
-    failStackBonus, levelBonus
-  };
-};
-
-const getReqExp = (level) => Math.floor(100 * Math.pow(1.4, level - 1));
-const getTavernCost = (visits) => Math.floor(500 * Math.pow(1.3, visits)); 
-const getRelicCost = (config, currentLevel) => Math.floor(config.costBase * Math.pow(config.costMult, currentLevel));
-
-const rollAppraisalGrade = (equipLevel) => {
-  const roll = Math.random() * 100 + (equipLevel * 1.5);
-  const eligibleGrades = APPRAISAL_GRADES.filter(g => roll >= g.reqRoll);
-  return eligibleGrades[eligibleGrades.length - 1]; 
-};
-
-// 무기(Weapon) 레벨 기준 데미지 연산
-const getComplexDamage = (weaponLevel, activeBuffs, playerLevel, appraisal) => {
-  const playerBaseAttack = playerLevel * 3;
-  const weaponAttack = 10 + Math.floor(Math.pow(weaponLevel, 1.85)); 
-  let totalBase = playerBaseAttack + weaponAttack;
-  
-  if (activeBuffs && activeBuffs.length > 0) {
-    const traitScaleMult = 1 + ((playerLevel - 1) * 0.01); // 플레이어 레벨에 따른 특성 효율 1% 증가
-    const multiplier = activeBuffs.filter(b => b.effect === 'damage_bonus')
-                                  .reduce((acc, b) => acc * (1 + (b.value - 1) * traitScaleMult), 1);
-    totalBase = Math.floor(totalBase * multiplier);
-  }
-  if (appraisal) {
-    totalBase = Math.floor(totalBase * appraisal.grade.mult);
-  }
-  return totalBase;
-};
-
-// 방어구(Armor) 레벨 기준 투기장 피해 감소 연산
-const getDamageMitigation = (armorLevel) => Math.min(0.8, armorLevel * 0.02); // 최대 80% 감소
+const getReqExp = (level) => Math.floor(100 * Math.pow(1.5, level - 1));
+const getRelicCost = (config, level) => Math.floor(config.costBase * Math.pow(config.costMult, level));
 
 const getBossConfig = (stage) => {
-  const safeStage = Math.max(0, stage);
-  if (safeStage < BOSS_LIST.length) return BOSS_LIST[safeStage];
-  const overStage = safeStage - BOSS_LIST.length + 1;
+  if (stage < BOSS_LIST.length) return BOSS_LIST[stage];
+  const overStage = stage - BOSS_LIST.length + 1;
   return {
     name: `심연의 파편 (Lv.${overStage})`, icon: Crown,
-    maxHp: Math.floor(80000 * Math.pow(1.8, overStage)),
-    rewardGold: 50000 + (20000 * overStage), rewardStone: 100 + (20 * overStage), color: 'text-fuchsia-500'
+    maxHp: Math.floor(15000 * Math.pow(1.8, overStage)),
+    rewardGold: 20000 + (10000 * overStage), rewardStone: 40 + (10 * overStage), color: 'text-fuchsia-500'
   };
 };
 
+const generateLocalAppraisal = (typeId, level) => {
+  const assets = {
+    weapon: { pre: ["전설의", "불타는", "얼어붙은", "심연의", "고결한"], suf: ["검", "대검", "도끼", "망치", "창"] },
+    armor: { pre: ["불굴의", "철갑의", "은빛", "용의"], suf: ["갑옷", "흉갑", "가죽옷"] },
+    ring: { pre: ["지혜의", "탐욕의", "행운의", "영생의"], suf: ["반지", "고리", "인장"] }
+  }[typeId];
+  
+  const roll = Math.random() * 100 + (level * 1.5);
+  const grade = APPRAISAL_GRADES.filter(g => roll >= g.reqRoll).pop();
+  const name = `${assets.pre[Math.floor(Math.random() * assets.pre.length)]} ${assets.suf[Math.floor(Math.random() * assets.suf.length)]}`;
+  return { grade, name, text: "고대 마력이 느껴지는 장비입니다." };
+};
+
+const getActiveBuffs = (traits, stats, achievements, relics) => {
+  const buffs = [];
+  traits.forEach(t => buffs.push({ effect: t.effect, value: t.value }));
+  
+  if (stats.ATTACK > 0) buffs.push({ effect: 'damage_bonus', value: 1 + (stats.ATTACK * CUSTOM_STATS_CONFIG.ATTACK.valuePerPoint) });
+  if (stats.SUCCESS > 0) buffs.push({ effect: 'success_bonus', value: stats.SUCCESS * CUSTOM_STATS_CONFIG.SUCCESS.valuePerPoint });
+  if (stats.CRIT > 0) buffs.push({ effect: 'crit_chance_bonus', value: stats.CRIT * CUSTOM_STATS_CONFIG.CRIT.valuePerPoint });
+  if (stats.WEALTH > 0) buffs.push({ effect: 'farm_bonus', value: 1 + (stats.WEALTH * CUSTOM_STATS_CONFIG.WEALTH.valuePerPoint) });
+
+  Object.entries(achievements).forEach(([id, tier]) => {
+    const ach = ACHIEVEMENTS_CONFIG.find(a => a.id === id);
+    if (ach && tier > 0) buffs.push({ effect: ach.effect, value: ach.baseValue + (ach.valuePerTier * (tier - 1)) });
+  });
+
+  Object.entries(relics).forEach(([id, level]) => {
+    const rel = RELICS_CONFIG[id];
+    if (rel && level > 0) {
+      let val = level * rel.valuePerLevel;
+      if (rel.effect.includes('bonus')) val += 1;
+      buffs.push({ effect: rel.effect, value: val });
+    }
+  });
+
+  return buffs;
+};
+
 // ==========================================
-// 3. Main Component
+// 3. Main Component Structure
 // ==========================================
 export default function App() {
-  // --- Core State ---
-  const [gameState, setGameState] = useState('intro');
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [traits, setTraits] = useState([]);
-  const [dynamicTraits, setDynamicTraits] = useState([]); 
-  const [activeModal, setActiveModal] = useState(null); 
-  
-  // --- Player Progression (Rebirth & Stats) ---
-  const [playerData, setPlayerData] = useState({ level: 1, exp: 0, traitPoints: 0 });
-  const [allocatedStats, setAllocatedStats] = useState({ ATTACK: 0, SUCCESS: 0, CRIT: 0, CRIT_DMG: 0, WEALTH: 0 });
-  const [soulStones, setSoulStones] = useState(0);
-  const [relics, setRelics] = useState({ DAMAGE: 0, GOLD: 0, SUCCESS: 0 });
-  
-  // --- Equipment & Resources ---
-  const [equipment, setEquipment] = useState({ weapon: 0, armor: 0, ring: 0 });
-  const [selectedEquip, setSelectedEquip] = useState('weapon');
-  const [appraisals, setAppraisals] = useState({ weapon: null, armor: null, ring: null });
-  const [failStack, setFailStack] = useState(0);
-  const [gold, setGold] = useState(2000);
-  const [stones, setStones] = useState(10);
-  
-  // --- Statistics & Metaprogression ---
-  const [stats, setStats] = useState({ totalGoldEarned: 2000, bossesDefeated: 0, totalClicks: 0, arenaWins: 0, tavernVisits: 0, rebirthCount: 0 });
-  const [achievementLevels, setAchievementLevels] = useState({}); 
-
-  // --- UI & Combat State ---
-  const [logs, setLogs] = useState([{ id: 0, text: '게임을 시작합니다. 자원을 모아 장비를 강화하세요!', type: 'info' }]);
-  const [isAppraising, setIsAppraising] = useState(false);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [damageTexts, setDamageTexts] = useState([]); 
-  
-  // Boss State
-  const [stage, setStage] = useState(0);
-  const [bossHp, setBossHp] = useState(0);
-  const [isAttacking, setIsAttacking] = useState(false);
-
-  // Arena (Ghost PvP) State
-  const [arenaOpponent, setArenaOpponent] = useState(null);
-  const [arenaResult, setArenaResult] = useState(null); 
-  const [winStreak, setWinStreak] = useState(0);
-  
-  // Tavern (Bard) State
-  const [bardTale, setBardTale] = useState(null);
-  const [isBardSinging, setIsBardSinging] = useState(false);
-  const [tavernBuffs, setTavernBuffs] = useState({ damage: 0, gold: 0 });
-  
-  const logsContainerRef = useRef(null);
-  const logIdCounter = useRef(1);
-  const prevPlayerLevel = useRef(1);
-
-  // --- Pipeline Computations ---
-  const activeBuffs = getActiveBuffs(traits, dynamicTraits, achievementLevels, allocatedStats, tavernBuffs, equipment, relics);
-  const currentEquipLevel = equipment[selectedEquip];
-  const currentAppraisal = appraisals[selectedEquip];
-  const currentConfig = getEffectiveTierConfig(currentEquipLevel, activeBuffs, failStack, playerData.level);
-  
-  const baseComputedDamage = getComplexDamage(equipment.weapon, activeBuffs, playerData.level, appraisals.weapon);
-  const currentTavernCost = getTavernCost(stats.tavernVisits);
-
-  // --- Effects ---
-  useEffect(() => {
-    if (logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
-  }, [logs]);
-
-  useEffect(() => {
-    setBossHp(getBossConfig(stage).maxHp);
-  }, [stage]);
-
-  // Level Up Side-effect
-  useEffect(() => {
-    if (playerData.level > prevPlayerLevel.current) {
-      const levelDiff = playerData.level - prevPlayerLevel.current;
-      addLog(`🎉 레벨 업! 레벨 ${playerData.level} 달성! (TP ${levelDiff * 2} 획득)`, 'success');
-      setStones(prev => prev + levelDiff * 2);
-      prevPlayerLevel.current = playerData.level;
-    }
-  }, [playerData.level]);
-
-  // Achievement & Dynamic Traits Observer
-  useEffect(() => {
-    let achievementsUpdated = false;
-    const newAchLevels = { ...achievementLevels };
-    
-    ACHIEVEMENTS_CONFIG.forEach(ach => {
-      const currentTier = newAchLevels[ach.id] || 0;
-      if (currentTier >= ach.thresholds.length) return; 
-      
-      const nextThreshold = ach.thresholds[currentTier];
-      let currentValue = 0;
-      if (ach.id === 'boss_slayer') currentValue = stats.bossesDefeated;
-      if (ach.id === 'rich') currentValue = stats.totalGoldEarned;
-      if (ach.id === 'arena') currentValue = stats.arenaWins;
-      if (ach.id === 'clicker') currentValue = stats.totalClicks;
-
-      if (currentValue >= nextThreshold) {
-        newAchLevels[ach.id] = currentTier + 1;
-        achievementsUpdated = true;
-        addLog(`🏆 [업적 달성] ${ach.name} Lv.${currentTier + 1} - 영구 버프 강화!`, 'success');
-      }
-    });
-    if (achievementsUpdated) setAchievementLevels(newAchLevels);
-
-    const newTraits = UNLOCKABLE_TRAITS.filter(t => !dynamicTraits.some(dt => dt.id === t.id) && t.condition(stats));
-    if (newTraits.length > 0) {
-      setDynamicTraits(prev => [...prev, ...newTraits]);
-      newTraits.forEach(t => addLog(`🔥 [히든 특성 해금] 조건을 만족하여 '${t.name}' 특성을 획득했습니다!`, 'success'));
-    }
-  }, [stats]);
-
-  // --- Handlers ---
-  const addLog = (text, type = 'info') => setLogs(prev => [...prev.slice(-49), { id: logIdCounter.current++, text, type }]); 
-
-  const showFloatingDamage = (amount, isCrit) => {
-    const id = Date.now() + Math.random();
-    const xOffset = Math.random() * 60 - 30; 
-    const yOffset = Math.random() * 20 - 10;
-    setDamageTexts(prev => [...prev, { id, amount, isCrit, x: xOffset, y: yOffset }]);
-    setTimeout(() => setDamageTexts(prev => prev.filter(t => t.id !== id)), 800); 
+  const DEFAULT_STATS = {
+    totalGoldEarned: 1000,
+    bossesDefeated: 0,
+    totalClicks: 0,
+    pvpWins: 0,
+    pvpLosses: 0,
+    arenaPoints: 1000,
+    lastPvpAt: 0
   };
 
-  const gainExp = (amount) => {
+  // --- App State ---
+  const [appState, setAppState] = useState('login'); // 'login', 'intro', 'playing'
+  const [playerName, setPlayerName] = useState('');
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [introVotes, setIntroVotes] = useState([]);
+
+  // --- Core Game State ---
+  const [gold, setGold] = useState(1000);
+  const [stones, setStones] = useState(5);
+  const [soulStones, setSoulStones] = useState(0);
+  const [playerData, setPlayerData] = useState({ level: 1, exp: 0, traitPoints: 0 });
+  const [equipment, setEquipment] = useState({ weapon: 0, armor: 0, ring: 0 });
+  const [appraisals, setAppraisals] = useState({ weapon: null, armor: null, ring: null });
+  const [allocatedStats, setAllocatedStats] = useState({ ATTACK: 0, SUCCESS: 0, CRIT: 0, WEALTH: 0 });
+  const [traits, setTraits] = useState([]);
+  const [relics, setRelics] = useState({ DAMAGE: 0, GOLD: 0 });
+  const [failStack, setFailStack] = useState(0);
+  
+  // --- Trackers & Progression ---
+  const [statistics, setStatistics] = useState(DEFAULT_STATS);
+  const [achievementLevels, setAchievementLevels] = useState({});
+  const [stage, setStage] = useState(0);
+  const [bossHp, setBossHp] = useState(0);
+  const suppressBossHpResetRef = useRef(false);
+
+  // --- UI State ---
+  const [logs, setLogs] = useState([]);
+  const [activeModal, setActiveModal] = useState(null);
+  const [selectedEquip, setSelectedEquip] = useState('weapon');
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [damageTexts, setDamageTexts] = useState([]);
+
+  // --- PvP State ---
+  const [user, setUser] = useState(null);
+  const [rankings, setRankings] = useState([]);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pvpOpponent, setPvpOpponent] = useState(null);
+  const [pvpResult, setPvpResult] = useState(null);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
+  // --- Local PIN (Optional) ---
+  const [pendingLogin, setPendingLogin] = useState(null); // { name, data }
+  const [pinPrompt, setPinPrompt] = useState({ open: false, pin: '', error: '', busy: false });
+  const [pinSettings, setPinSettings] = useState({ current: '', next: '', confirm: '', error: '', busy: false });
+
+  // --- UI Settings & Screen Saver ---
+  const [uiSettings, setUiSettings] = useState(DEFAULT_UI_SETTINGS);
+  const [isScreenSaver, setIsScreenSaver] = useState(false);
+  const [screenSaverLocked, setScreenSaverLocked] = useState(false);
+  const [unlockPrompt, setUnlockPrompt] = useState({ open: false, pin: '', error: '', busy: false });
+  const idleTimerRef = useRef(null);
+
+  // --- Feedback Board ---
+  const [feedbackItems, setFeedbackItems] = useState([]);
+  const [feedbackDraft, setFeedbackDraft] = useState('');
+  const [isPostingFeedback, setIsPostingFeedback] = useState(false);
+
+  // --- Idle Mining State ---
+  const [isMining, setIsMining] = useState(false);
+  const [mineCharge, setMineCharge] = useState(0);
+  const mineChargeRef = useRef(0);
+  const mineTimerRef = useRef(null);
+
+  // --- Derived State ---
+  const activeBuffs = getActiveBuffs(traits, allocatedStats, achievementLevels, relics);
+  const myCombatPower = Math.floor(
+    (playerData.level * 10 + equipment.weapon * 25) 
+    * (activeBuffs.filter(b => b.effect === 'damage_bonus').reduce((acc, b) => acc * b.value, 1))
+    * (appraisals.weapon ? appraisals.weapon.grade.mult : 1.0)
+  );
+  const hasLocalPin = Boolean(playerName && getStoredPinRecord(playerName));
+
+  useEffect(() => {
+    setUiSettings(readUiSettings());
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings));
+    } catch {
+      // ignore
+    }
+  }, [uiSettings]);
+
+  useEffect(() => {
+    if (!uiSettings.screenSaverEnabled) {
+      setIsScreenSaver(false);
+      setScreenSaverLocked(false);
+      setUnlockPrompt({ open: false, pin: '', error: '', busy: false });
+    }
+  }, [uiSettings.screenSaverEnabled]);
+
+  // ==========================================
+  // [Logic] Initialization & Auth
+  // ==========================================
+  const addLog = useCallback((text, type = 'info') => {
+    setLogs(prev => [...prev.slice(-29), { id: Date.now() + Math.random(), text, type }]);
+  }, []);
+
+  const resetGameForNewProfile = () => {
+    setGold(1000);
+    setStones(5);
+    setSoulStones(0);
+    setPlayerData({ level: 1, exp: 0, traitPoints: 0 });
+    setEquipment({ weapon: 0, armor: 0, ring: 0 });
+    setAppraisals({ weapon: null, armor: null, ring: null });
+    setAllocatedStats({ ATTACK: 0, SUCCESS: 0, CRIT: 0, WEALTH: 0 });
+    setTraits([]);
+    setRelics({ DAMAGE: 0, GOLD: 0 });
+    setFailStack(0);
+    setStatistics(DEFAULT_STATS);
+    setAchievementLevels({});
+
+    suppressBossHpResetRef.current = true;
+    setStage(0);
+    setBossHp(getBossConfig(0).maxHp);
+
+    setLogs([]);
+    setActiveModal(null);
+    setSelectedEquip('weapon');
+    setIsAnimating(false);
+    setDamageTexts([]);
+    setPvpOpponent(null);
+    setPvpResult(null);
+  };
+
+  const loadGameFromSave = (data) => {
+    const nextStage = data.stage || 0;
+    const nextBossHp = typeof data.bossHp === 'number' ? data.bossHp : getBossConfig(nextStage).maxHp;
+
+    setGold(data.gold);
+    setStones(data.stones);
+    setSoulStones(data.soulStones || 0);
+    setPlayerData(data.playerData);
+    setEquipment(data.equipment);
+    setAppraisals(data.appraisals);
+    setAllocatedStats(data.allocatedStats);
+    setTraits(data.traits || []);
+    setRelics(data.relics || { DAMAGE: 0, GOLD: 0 });
+    setFailStack(data.failStack || 0);
+    setStatistics({ ...DEFAULT_STATS, ...(data.statistics || {}) });
+    setAchievementLevels(data.achievementLevels || {});
+
+    suppressBossHpResetRef.current = true;
+    setStage(nextStage);
+    setBossHp(nextBossHp);
+  };
+
+  const handleLogin = (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    const saved = localStorage.getItem(getSaveKey(trimmed));
+    if (saved) {
+      const data = JSON.parse(saved);
+      const record = getStoredPinRecord(trimmed);
+      if (record) {
+        setPendingLogin({ name: trimmed, data });
+        setPinPrompt({ open: true, pin: '', error: '', busy: false });
+        return;
+      }
+
+      setPlayerName(trimmed);
+      loadGameFromSave(data);
+      setAppState('playing');
+      addLog(`[세션 복구] 환영합니다, ${trimmed}님!`, 'success');
+    } else {
+      setPlayerName(trimmed);
+      setQuestionIndex(0);
+      setIntroVotes([]);
+      resetGameForNewProfile();
+      setAppState('intro');
+    }
+  };
+
+  const closePinPrompt = () => {
+    setPinPrompt({ open: false, pin: '', error: '', busy: false });
+    setPendingLogin(null);
+  };
+
+  const confirmPinLogin = async () => {
+    if (!pendingLogin) return;
+    const pin = String(pinPrompt.pin || '').trim();
+    if (!isValidPin(pin)) {
+      setPinPrompt(p => ({ ...p, error: 'PIN은 4~12자리 숫자만 가능합니다.' }));
+      return;
+    }
+
+    const record = getStoredPinRecord(pendingLogin.name);
+    if (!record) {
+      setPlayerName(pendingLogin.name);
+      loadGameFromSave(pendingLogin.data);
+      setAppState('playing');
+      closePinPrompt();
+      return;
+    }
+
+    setPinPrompt(p => ({ ...p, busy: true, error: '' }));
+    try {
+      const ok = await verifyPin(pin, record);
+      if (!ok) {
+        setPinPrompt(p => ({ ...p, error: 'PIN이 일치하지 않습니다.' }));
+        return;
+      }
+
+      setPlayerName(pendingLogin.name);
+      loadGameFromSave(pendingLogin.data);
+      setAppState('playing');
+      addLog('[보안] PIN 확인 완료', 'success');
+      closePinPrompt();
+    } catch (e) {
+      console.error('PIN verify failed:', e);
+      setPinPrompt(p => ({ ...p, error: 'PIN 확인 중 오류가 발생했습니다.' }));
+    } finally {
+      setPinPrompt(p => ({ ...p, busy: false }));
+    }
+  };
+
+  const resetProfileWithoutPin = () => {
+    if (!pendingLogin) return;
+    localStorage.removeItem(getSaveKey(pendingLogin.name));
+    localStorage.removeItem(getPinKey(pendingLogin.name));
+    const name = pendingLogin.name;
+    closePinPrompt();
+    setPlayerName(name);
+    resetGameForNewProfile();
+    setAppState('intro');
+  };
+
+  const saveNewPin = async () => {
+    const next = String(pinSettings.next || '').trim();
+    const confirm = String(pinSettings.confirm || '').trim();
+    if (!isValidPin(next)) return setPinSettings(s => ({ ...s, error: 'PIN은 4~12자리 숫자만 가능합니다.' }));
+    if (next !== confirm) return setPinSettings(s => ({ ...s, error: 'PIN 확인이 일치하지 않습니다.' }));
+
+    setPinSettings(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const record = await hashPin(next);
+      localStorage.setItem(getPinKey(playerName), JSON.stringify({ ...record, v: 1, iterations: PBKDF2_ITERATIONS, createdAt: Date.now() }));
+      setPinSettings({ current: '', next: '', confirm: '', error: '', busy: false });
+      addLog('[보안] 로컬 PIN 설정 완료', 'success');
+    } catch (e) {
+      console.error('PIN set failed:', e);
+      setPinSettings(s => ({ ...s, error: 'PIN 설정 중 오류가 발생했습니다.' }));
+    } finally {
+      setPinSettings(s => ({ ...s, busy: false }));
+    }
+  };
+
+  const changePin = async () => {
+    const current = String(pinSettings.current || '').trim();
+    const next = String(pinSettings.next || '').trim();
+    const confirm = String(pinSettings.confirm || '').trim();
+    if (!isValidPin(current)) return setPinSettings(s => ({ ...s, error: '현재 PIN을 입력하세요.' }));
+    if (!isValidPin(next)) return setPinSettings(s => ({ ...s, error: '새 PIN은 4~12자리 숫자만 가능합니다.' }));
+    if (next !== confirm) return setPinSettings(s => ({ ...s, error: '새 PIN 확인이 일치하지 않습니다.' }));
+
+    const record = getStoredPinRecord(playerName);
+    if (!record) return setPinSettings(s => ({ ...s, error: '설정된 PIN을 찾지 못했습니다.' }));
+
+    setPinSettings(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const ok = await verifyPin(current, record);
+      if (!ok) return setPinSettings(s => ({ ...s, error: '현재 PIN이 일치하지 않습니다.' }));
+
+      const nextRecord = await hashPin(next);
+      localStorage.setItem(getPinKey(playerName), JSON.stringify({ ...nextRecord, v: 1, iterations: PBKDF2_ITERATIONS, createdAt: Date.now() }));
+      setPinSettings({ current: '', next: '', confirm: '', error: '', busy: false });
+      addLog('[보안] 로컬 PIN 변경 완료', 'success');
+    } catch (e) {
+      console.error('PIN change failed:', e);
+      setPinSettings(s => ({ ...s, error: 'PIN 변경 중 오류가 발생했습니다.' }));
+    } finally {
+      setPinSettings(s => ({ ...s, busy: false }));
+    }
+  };
+
+  const removePin = async () => {
+    const current = String(pinSettings.current || '').trim();
+    if (!isValidPin(current)) return setPinSettings(s => ({ ...s, error: '현재 PIN을 입력하세요.' }));
+
+    const record = getStoredPinRecord(playerName);
+    if (!record) return setPinSettings(s => ({ ...s, error: '설정된 PIN을 찾지 못했습니다.' }));
+
+    setPinSettings(s => ({ ...s, busy: true, error: '' }));
+    try {
+      const ok = await verifyPin(current, record);
+      if (!ok) return setPinSettings(s => ({ ...s, error: '현재 PIN이 일치하지 않습니다.' }));
+
+      localStorage.removeItem(getPinKey(playerName));
+      setPinSettings({ current: '', next: '', confirm: '', error: '', busy: false });
+      addLog('[보안] 로컬 PIN 해제 완료', 'success');
+    } catch (e) {
+      console.error('PIN remove failed:', e);
+      setPinSettings(s => ({ ...s, error: 'PIN 해제 중 오류가 발생했습니다.' }));
+    } finally {
+      setPinSettings(s => ({ ...s, busy: false }));
+    }
+  };
+
+  const wakeScreenSaver = () => {
+    if (!isScreenSaver) return;
+    if (screenSaverLocked) {
+      setUnlockPrompt({ open: true, pin: '', error: '', busy: false });
+      return;
+    }
+    setIsScreenSaver(false);
+  };
+
+  const confirmUnlock = async () => {
+    const pin = String(unlockPrompt.pin || '').trim();
+    if (!isValidPin(pin)) return setUnlockPrompt(p => ({ ...p, error: 'PIN은 4~12자리 숫자만 가능합니다.' }));
+
+    const record = playerName ? getStoredPinRecord(playerName) : null;
+    if (!record) {
+      setScreenSaverLocked(false);
+      setUnlockPrompt({ open: false, pin: '', error: '', busy: false });
+      setIsScreenSaver(false);
+      return;
+    }
+
+    setUnlockPrompt(p => ({ ...p, busy: true, error: '' }));
+    try {
+      const ok = await verifyPin(pin, record);
+      if (!ok) return setUnlockPrompt(p => ({ ...p, error: 'PIN이 일치하지 않습니다.' }));
+
+      setScreenSaverLocked(false);
+      setUnlockPrompt({ open: false, pin: '', error: '', busy: false });
+      setIsScreenSaver(false);
+    } catch (e) {
+      console.error('unlock failed:', e);
+      setUnlockPrompt(p => ({ ...p, error: 'PIN 확인 중 오류가 발생했습니다.' }));
+    } finally {
+      setUnlockPrompt(p => ({ ...p, busy: false }));
+    }
+  };
+
+  const postFeedback = async () => {
+    if (isOfflineMode) return addLog('[피드백] 오프라인 모드에서는 전송할 수 없습니다.', 'danger');
+    if (!user) return addLog('[피드백] 로그인 정보를 확인할 수 없습니다.', 'danger');
+
+    const text = String(feedbackDraft || '').trim();
+    if (!text) return;
+    if (text.length > 400) return addLog('[피드백] 400자 이내로 작성해 주세요.', 'warning');
+
+    setIsPostingFeedback(true);
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'feedback'), {
+        uid: user.uid,
+        name: String(playerName || 'Anonymous'),
+        text,
+        createdAt: serverTimestamp(),
+        clientAt: Date.now()
+      });
+      setFeedbackDraft('');
+      addLog('[피드백] 전송 완료!', 'success');
+    } catch (e) {
+      console.error('postFeedback failed:', e);
+      if (e?.code === 'permission-denied') {
+        addLog('[피드백] Firestore 권한이 없어 전송할 수 없습니다. (Rules 확인 필요)', 'danger');
+        setIsOfflineMode(true);
+      } else {
+        addLog('[피드백] 전송 실패', 'danger');
+      }
+    } finally {
+      setIsPostingFeedback(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeModal !== 'feedback') return;
+    if (!user || isOfflineMode) {
+      setFeedbackItems([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'artifacts', appId, 'public', 'data', 'feedback'),
+      orderBy('createdAt', 'desc'),
+      limit(30)
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const rows = [];
+        snapshot.forEach((d) => rows.push({ id: d.id, ...d.data() }));
+        setFeedbackItems(rows);
+      },
+      (err) => {
+        console.error('feedback subscribe failed:', err);
+        if (err?.code === 'permission-denied') {
+          addLog('[피드백] Firestore 권한이 없어 게시판을 불러올 수 없습니다. (Rules 확인 필요)', 'danger');
+          setFeedbackItems([]);
+          setIsOfflineMode(true);
+        }
+      }
+    );
+
+    return unsub;
+  }, [activeModal, user, isOfflineMode, addLog, playerName]);
+
+  useEffect(() => {
+    if (appState !== 'playing') return;
+    if (!uiSettings.screenSaverEnabled) return;
+
+    const arm = () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => {
+        setIsScreenSaver(true);
+        const locked = Boolean(hasLocalPin);
+        setScreenSaverLocked(locked);
+        setUnlockPrompt(locked ? { open: true, pin: '', error: '', busy: false } : { open: false, pin: '', error: '', busy: false });
+      }, uiSettings.screenSaverIdleMs);
+    };
+
+    const onActivity = () => {
+      if (isScreenSaver) return;
+      arm();
+    };
+
+    arm();
+    const opts = { passive: true };
+    window.addEventListener('mousemove', onActivity, opts);
+    window.addEventListener('mousedown', onActivity, opts);
+    window.addEventListener('keydown', onActivity, opts);
+    window.addEventListener('touchstart', onActivity, opts);
+    window.addEventListener('scroll', onActivity, opts);
+
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      window.removeEventListener('mousemove', onActivity, opts);
+      window.removeEventListener('mousedown', onActivity, opts);
+      window.removeEventListener('keydown', onActivity, opts);
+      window.removeEventListener('touchstart', onActivity, opts);
+      window.removeEventListener('scroll', onActivity, opts);
+    };
+  }, [appState, uiSettings.screenSaverEnabled, uiSettings.screenSaverIdleMs, isScreenSaver, hasLocalPin]);
+
+  useEffect(() => {
+    if (appState === 'playing' && playerName) {
+      const stateToSave = { gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp };
+      const handle = setTimeout(() => {
+        localStorage.setItem(getSaveKey(playerName), JSON.stringify(stateToSave));
+      }, 500);
+      return () => clearTimeout(handle);
+    }
+  }, [appState, playerName, gold, stones, soulStones, playerData, equipment, appraisals, allocatedStats, traits, relics, failStack, statistics, achievementLevels, stage, bossHp]);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        // 방어 로직: API Key가 누락된 경우 오프라인 모드로 전환하여 앱 크래시 방지
+        if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
+          console.warn("[경고] Firebase API Key가 설정되지 않았습니다. 투기장 동기화 기능이 제한된 오프라인 모드로 실행됩니다.");
+          setIsOfflineMode(true);
+          return;
+        }
+
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) { 
+        console.error("Auth Failed:", e); 
+        setIsOfflineMode(true);
+      }
+    };
+    initAuth();
+
+    if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+      return onAuthStateChanged(auth, setUser);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user || isOfflineMode) return;
+
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks');
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const data = [];
+        snapshot.forEach(d => data.push(d.data()));
+        setRankings(
+          data
+            .sort((a, b) =>
+              (b.arenaPoints || 0) - (a.arenaPoints || 0) ||
+              (b.combatPower || 0) - (a.combatPower || 0)
+            )
+            .slice(0, 10)
+        );
+      },
+      (err) => {
+        console.error("Firestore Subscribe Error:", err);
+        if (err?.code === 'permission-denied') {
+          addLog('[PvP] Firestore 권한이 없어 랭킹을 불러올 수 없습니다. (Rules 확인 필요)', 'danger');
+          setRankings([]);
+          setIsOfflineMode(true);
+        }
+      }
+    );
+
+    return unsub;
+  }, [user, isOfflineMode, addLog]);
+
+  // ==========================================
+  // [Logic] Progression & Achievements
+  // ==========================================
+  useEffect(() => {
+    setBossHp((prev) => {
+      if (suppressBossHpResetRef.current) {
+        suppressBossHpResetRef.current = false;
+        return prev;
+      }
+      return getBossConfig(stage).maxHp;
+    });
+  }, [stage]);
+
+  useEffect(() => {
+    if (appState !== 'playing') return;
+    let updated = false;
+    const newAchs = { ...achievementLevels };
+    ACHIEVEMENTS_CONFIG.forEach(ach => {
+      const currentTier = newAchs[ach.id] || 0;
+      if (currentTier >= ach.thresholds.length) return;
+      let val = 0;
+      if (ach.id === 'boss_slayer') val = statistics.bossesDefeated;
+      if (ach.id === 'rich') val = statistics.totalGoldEarned;
+      if (ach.id === 'clicker') val = statistics.totalClicks;
+      
+      if (val >= ach.thresholds[currentTier]) {
+        newAchs[ach.id] = currentTier + 1; updated = true;
+        addLog(`🏆 [업적 달성] ${ach.name} Lv.${currentTier + 1} - 영구 버프 획득!`, 'success');
+      }
+    });
+    if (updated) setAchievementLevels(newAchs);
+  }, [statistics, appState, achievementLevels, addLog]);
+
+  const gainExp = useCallback((amount) => {
     setPlayerData(prev => {
-      let newExp = prev.exp + amount;
-      let newLv = prev.level;
-      let newTp = prev.traitPoints;
-      let reqExp = getReqExp(newLv);
-      while (newExp >= reqExp) {
-        newExp -= reqExp;
-        newLv++;
-        newTp += 2; 
-        reqExp = getReqExp(newLv);
+      let newExp = prev.exp + amount; let newLv = prev.level; let newTp = prev.traitPoints;
+      while (newExp >= getReqExp(newLv)) {
+        newExp -= getReqExp(newLv); newLv++; newTp += 3;
+        addLog(`🎉 레벨 업! Level ${newLv} 달성! (TP +3)`, 'success');
       }
       return { level: newLv, exp: newExp, traitPoints: newTp };
     });
-  };
+  }, [addLog]);
 
-  const handleAllocateStat = (statId) => {
-    if (playerData.traitPoints > 0 && allocatedStats[statId] < CUSTOM_STATS_CONFIG[statId].maxLevel) {
-      setPlayerData(p => ({ ...p, traitPoints: p.traitPoints - 1 }));
-      setAllocatedStats(p => ({ ...p, [statId]: p[statId] + 1 }));
+  const recordClick = () => setStatistics(s => ({ ...s, totalClicks: s.totalClicks + 1 }));
+
+  // ==========================================
+  // [Logic] Actions (Mine, Enhance, Attack)
+  // ==========================================
+  const completeMining = (chargePercent) => {
+    const chargeRatio = Math.max(0, Math.min(100, Number(chargePercent || 0))) / 100;
+    const farmBonus = activeBuffs.filter(b => b.effect === 'farm_bonus').reduce((acc, b) => acc * b.value, 1);
+    const baseGold = Math.floor(Math.random() * 50) + 20;
+
+    const earnedGold = Math.floor(baseGold * (1 + chargeRatio * 10) * farmBonus);
+    const earnedStones = chargeRatio > 0.8 ? (Math.random() < 0.5 ? 2 : 1) : 0;
+
+    if (earnedGold > 0) {
+      setGold(g => g + earnedGold);
+      setStones(s => s + earnedStones);
+      setStatistics(s => ({ ...s, totalGoldEarned: s.totalGoldEarned + earnedGold }));
+      gainExp(Math.floor(earnedGold / 2));
+      addLog(`채굴: ${earnedGold}G${earnedStones > 0 ? `, 강화석 ${earnedStones}개` : ''} 획득 (충전 ${Math.round(chargeRatio * 100)}%)`, 'success');
     }
   };
 
-  const handleRebirth = () => {
-    if (playerData.level < 15) return addLog('환생은 플레이어 레벨 15 이상부터 가능합니다.', 'warning');
-    
-    // 장비의 평균 레벨 + 플레이어 레벨 비례하여 영혼석 지급
-    const earnedStones = Math.floor((equipment.weapon + equipment.armor + equipment.ring) / 3) + Math.floor(playerData.level / 5);
-    
-    setSoulStones(prev => prev + earnedStones);
-    setEquipment({ weapon: 0, armor: 0, ring: 0 });
-    setAppraisals({ weapon: null, armor: null, ring: null });
-    setPlayerData({ level: 1, exp: 0, traitPoints: 0 });
-    setAllocatedStats({ ATTACK: 0, SUCCESS: 0, CRIT: 0, CRIT_DMG: 0, WEALTH: 0 });
-    setGold(0);
-    setStones(0);
-    setStage(0);
-    setFailStack(0);
-    setArenaOpponent(null);
-    setArenaResult(null);
-    setStats(s => ({ ...s, rebirthCount: s.rebirthCount + 1 }));
-    prevPlayerLevel.current = 1;
-    
-    setActiveModal(null);
-    addLog(`✨ [환생] 육체를 초월하여 영혼석 ${earnedStones}개를 획득했습니다. (장비 및 스탯 초기화)`, 'success');
+  const startMining = () => {
+    setIsMining(true);
+    mineChargeRef.current = 0;
+    setMineCharge(0);
+    recordClick();
+
+    mineTimerRef.current = setInterval(() => {
+      mineChargeRef.current = Math.min(mineChargeRef.current + 2, 100);
+      setMineCharge(mineChargeRef.current);
+
+      if (mineChargeRef.current >= 100) {
+        completeMining(100);
+        mineChargeRef.current = 0;
+        setMineCharge(0);
+      }
+    }, 50);
   };
 
-  const handleUpgradeRelic = (relicId) => {
-    const config = RELICS_CONFIG[relicId];
-    const currentLevel = relics[relicId];
-    const cost = getRelicCost(config, currentLevel);
-    
-    if (soulStones >= cost && currentLevel < config.max) {
-      setSoulStones(prev => prev - cost);
-      setRelics(prev => ({ ...prev, [relicId]: currentLevel + 1 }));
-      addLog(`💎 [유물 강화] '${config.name}'의 힘이 강해집니다.`, 'success');
-    }
-  };
+  const stopMining = () => {
+    if (!isMining) return;
+    clearInterval(mineTimerRef.current);
+    setIsMining(false);
 
-  const handleFarm = () => {
-    const baseGold = Math.floor(Math.random() * 200) + 50;
-    const traitScaleMult = 1 + ((playerData.level - 1) * 0.01);
-    const goldBonus = activeBuffs.filter(b => b.effect === 'farm_bonus').reduce((acc, b) => acc * (1 + (b.value - 1) * traitScaleMult), 1);
-    
-    const earnedGold = Math.floor(baseGold * goldBonus);
-    const baseStoneChance = 0.3;
-    const stoneBonus = activeBuffs.filter(b => b.effect === 'stone_drop_bonus').reduce((acc, b) => acc + (b.value * traitScaleMult), 0);
-    
-    const earnedStones = Math.random() < (baseStoneChance + stoneBonus) ? 1 : 0; 
-    
-    setGold(prev => prev + earnedGold);
-    if (earnedStones > 0) setStones(prev => prev + earnedStones);
-    gainExp(15); 
-    
-    setStats(s => ({ ...s, totalClicks: s.totalClicks + 1, totalGoldEarned: s.totalGoldEarned + earnedGold }));
-    addLog(`광산에서 골드 ${earnedGold}G${earnedStones > 0 ? ', 강화석 1개' : ''}를 획득했습니다.`, 'farm');
+    completeMining(mineChargeRef.current);
+    mineChargeRef.current = 0;
+    setMineCharge(0);
   };
 
   const handleEnhance = () => {
-    if (currentEquipLevel >= MAX_LEVEL) return addLog('이미 최고 레벨에 도달했습니다!', 'warning');
-    if (gold < currentConfig.gold || stones < currentConfig.stone) {
-      return addLog(`자원이 부족합니다. (필요: ${currentConfig.gold}G, 강화석 ${currentConfig.stone}개)`, 'warning');
-    }
-
-    setGold(prev => prev - currentConfig.gold);
-    setStones(prev => prev - currentConfig.stone);
-    setStats(s => ({ ...s, totalClicks: s.totalClicks + 1 }));
-    setIsAnimating(true);
+    recordClick();
+    const level = equipment[selectedEquip];
+    if (level >= MAX_LEVEL) return addLog('최대 강화 수치에 도달했습니다.', 'warning');
     
-    // 장비 강화 시 해당 부위의 감정 내역은 초기화 (새로운 기운)
-    setAppraisals(prev => ({ ...prev, [selectedEquip]: null }));
+    const config = ENHANCE_TIERS.find(t => level < t.threshold) || ENHANCE_TIERS[ENHANCE_TIERS.length - 1];
+    if (gold < config.gold || stones < config.stone) return addLog('자원이 부족합니다.', 'danger');
+
+    setGold(g => g - config.gold); setStones(s => s - config.stone);
+    setIsAnimating(true);
 
     setTimeout(() => {
       setIsAnimating(false);
-      const roll = Math.random() * 100;
-      gainExp(currentConfig.gold / 20);
+      const successBonus = activeBuffs.filter(b => b.effect === 'success_bonus').reduce((acc, b) => acc + b.value, 0);
+      const safetyBonus = activeBuffs.filter(b => b.effect === 'safety_bonus').reduce((acc, b) => acc + b.value, 0);
       
-      if (roll < currentConfig.success) {
-        setEquipment(prev => ({ ...prev, [selectedEquip]: prev[selectedEquip] + 1 }));
-        setFailStack(0); 
-        addLog(`[성공] ${EQUIP_TYPES[selectedEquip].name} +${currentEquipLevel + 1} 단계 달성!`, 'success');
+      const realSuccess = Math.min(100, config.success + successBonus + (failStack * 1.5));
+      const realDrop = Math.max(0, config.drop - safetyBonus);
+      const realDestroy = Math.max(0, config.destroy - safetyBonus);
+      
+      const roll = Math.random() * 100;
+      if (roll < realSuccess) {
+        setEquipment(prev => ({ ...prev, [selectedEquip]: level + 1 }));
+        setAppraisals(prev => ({ ...prev, [selectedEquip]: null })); 
+        setFailStack(0);
+        addLog(`[성공] ${EQUIP_TYPES[selectedEquip].name} +${level + 1} 달성!`, 'success');
       } else {
-        setFailStack(prev => prev + 1); 
-        if (roll < currentConfig.success + currentConfig.drop && currentEquipLevel > 0) {
-          setEquipment(prev => ({ ...prev, [selectedEquip]: prev[selectedEquip] - 1 }));
-          addLog(`[하락] 강화 실패로 레벨이 하락했습니다. (+${currentEquipLevel - 1}) (보정 스택 +1)`, 'danger');
-        } else if (roll < currentConfig.success + currentConfig.drop + currentConfig.destroy) {
-          setEquipment(prev => ({ ...prev, [selectedEquip]: 0 }));
-          addLog(`[파괴] 장비가 산산조각 났습니다. (+0 초기화) (보정 스택 +1)`, 'danger');
+        setFailStack(f => f + 1);
+        const penaltyRoll = Math.random() * 100;
+        if (penaltyRoll < realDestroy) {
+          setEquipment(p => ({ ...p, [selectedEquip]: 0 })); addLog(`[파괴] 장비가 산산조각 났습니다.`, 'danger');
+        } else if (penaltyRoll < realDrop && level > 0) {
+          setEquipment(p => ({ ...p, [selectedEquip]: level - 1 })); addLog(`[하락] 강화 수치가 떨어졌습니다.`, 'warning');
         } else {
-          addLog(`[실패] 강화에 실패했습니다. (+${currentEquipLevel}) (보정 스택 +1)`, 'warning');
+          addLog(`[실패] 강화에 실패했습니다. (스택 +1)`, 'warning');
         }
       }
     }, 600);
   };
 
-  const handleAttack = () => {
-    if (bossHp <= 0 || isAttacking || isAnimating) return;
-    setIsAttacking(true);
+  const handleAppraisal = () => {
+    recordClick();
+    if (gold < 500) return addLog('감정 비용(500G)이 부족합니다.', 'danger');
+    setGold(g => g - 500);
+    const result = generateLocalAppraisal(selectedEquip, equipment[selectedEquip]);
+    setAppraisals(prev => ({ ...prev, [selectedEquip]: result }));
+    addLog(`[감정] [${result.grade.name}] ${result.name} 획득!`, 'success');
+  };
 
-    const baseCrit = 0.2;
-    const traitScaleMult = 1 + ((playerData.level - 1) * 0.01);
-    const critBonus = activeBuffs.filter(b => b.effect === 'crit_chance_bonus').reduce((acc, b) => acc + (b.value * traitScaleMult), 0);
-    const isCrit = Math.random() < (baseCrit + critBonus);
-    
-    // RNG 보정 (±5%) 적용된 무기 공격력 연산
-    const rngMultiplier = 0.95 + (Math.random() * 0.1); 
-    let finalDamage = Math.floor(baseComputedDamage * rngMultiplier);
-    
-    if (isCrit) {
-      const critDamageBonus = activeBuffs.filter(b => b.effect === 'crit_damage_bonus').reduce((acc, b) => acc + b.value, 0);
-      finalDamage = Math.floor(finalDamage * (1.5 + critDamageBonus));
-    }
-    
-    showFloatingDamage(finalDamage, isCrit); 
-    
-    const nextHp = Math.max(0, bossHp - finalDamage);
+  const handleAttack = () => {
+    if (bossHp <= 0 || isAnimating) return;
+    setIsAnimating(true); recordClick();
+
+    const critBonus = activeBuffs.filter(b => b.effect === 'crit_chance_bonus').reduce((acc, b) => acc + b.value, 0);
+    const isCrit = Math.random() < (0.1 + critBonus);
+    let dmg = Math.floor(myCombatPower * (0.9 + Math.random() * 0.2));
+    if (isCrit) dmg = Math.floor(dmg * 2);
+
+    const id = Date.now();
+    setDamageTexts(prev => [...prev, { id, amount: dmg, isCrit, x: Math.random() * 60 - 30, y: Math.random() * 20 - 10 }]);
+    setTimeout(() => setDamageTexts(prev => prev.filter(t => t.id !== id)), 800);
+
+    const nextHp = Math.max(0, bossHp - dmg);
     setBossHp(nextHp);
-    setStats(s => ({ ...s, totalClicks: s.totalClicks + 1 }));
-    
-    if (isCrit) addLog(`💥 크리티컬 적중! 보스에게 ${finalDamage}의 데미지를 입혔습니다.`, 'success');
+
+    const hitGold = Math.max(1, Math.floor(dmg / 10));
+    const hitExp = Math.max(1, Math.floor(dmg / 20));
+    setGold(g => g + hitGold);
+    gainExp(hitExp);
 
     if (nextHp === 0) {
       const boss = getBossConfig(stage);
-      const rewardBonus = activeBuffs.filter(b => b.effect === 'boss_reward_bonus').reduce((acc, b) => acc * (1 + (b.value - 1) * traitScaleMult), 1);
-      
-      const finalGoldReward = Math.floor(boss.rewardGold * rewardBonus);
-      const finalStoneReward = Math.floor(boss.rewardStone * rewardBonus);
-
-      setGold(prev => prev + finalGoldReward);
-      setStones(prev => prev + finalStoneReward);
-      gainExp(finalGoldReward / 10);
-      setStats(s => ({ ...s, bossesDefeated: s.bossesDefeated + 1, totalGoldEarned: s.totalGoldEarned + finalGoldReward }));
-      
-      addLog(`[토벌 성공] ${boss.name} 처치! 골드 ${finalGoldReward}G, 강화석 ${finalStoneReward}개 획득.`, 'success');
-      setTimeout(() => setStage(prev => prev + 1), 1200);
+      setGold(g => g + boss.rewardGold); setStones(s => s + boss.rewardStone);
+      setStatistics(s => ({ ...s, bossesDefeated: s.bossesDefeated + 1, totalGoldEarned: s.totalGoldEarned + boss.rewardGold }));
+      gainExp(boss.rewardGold / 10);
+      addLog(`[토벌] ${boss.name} 처치! 골드 ${boss.rewardGold.toLocaleString()} 획득.`, 'success');
+      setTimeout(() => setStage(s => s + 1), 1000);
     }
-    setTimeout(() => setIsAttacking(false), 150);
+    setTimeout(() => setIsAnimating(false), 150);
   };
 
-  const handleAppraise = async () => {
-    if (isAppraising) return;
-    setIsAppraising(true);
-    addLog(`✨ 대장장이에게 ${EQUIP_TYPES[selectedEquip].name} 감정을 의뢰합니다...`, 'info');
+  const handleRebirth = () => {
+    if (playerData.level < 20) return addLog('환생은 레벨 20 이상부터 가능합니다.', 'warning');
+    const earned = Math.floor((equipment.weapon + equipment.armor + equipment.ring) / 3) + Math.floor(playerData.level / 5);
+    setSoulStones(s => s + earned);
+    setEquipment({ weapon: 0, armor: 0, ring: 0 }); setAppraisals({ weapon: null, armor: null, ring: null });
+    setPlayerData({ level: 1, exp: 0, traitPoints: 0 }); setAllocatedStats({ ATTACK: 0, SUCCESS: 0, CRIT: 0, WEALTH: 0 });
+    setGold(0); setStones(0); setStage(0); setFailStack(0);
+    setActiveModal(null);
+    addLog(`✨ [환생] 영혼석 ${earned}개 획득! (스탯/장비/스테이지 초기화)`, 'success');
+  };
 
-    // Canvas 환경 자동 주입을 위해 빈 문자열 유지
-    const apiKey = ""; 
-    const traitNames = traits.map(t => t.name).join(', ');
-    const rolledGrade = rollAppraisalGrade(currentEquipLevel);
-
-    const prompt = `너는 판타지 게임의 대장장이야. 이 장비는 +${currentEquipLevel} 단계의 ${EQUIP_TYPES[selectedEquip].name}이고 주인의 성향은 [${traitNames}]이야.
-    등급은 [${rolledGrade.name}] 등급이야. 이 등급과 장비에 걸맞은 아주 멋지고 에픽한 '이름'과 1~2줄짜리 '배경 설정(lore)'을 작성해줘.
-    결과는 반드시 {"name": "...", "lore": "..."} 형태의 JSON으로 줘.`;
-
+  const syncProfile = async () => {
+    if (isOfflineMode) return addLog('[오프라인] Firebase 연동이 필요합니다.', 'danger');
+    if (!user || !playerName) return;
+    setIsSyncing(true);
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
-      });
-      const data = await response.json();
-      const parsed = JSON.parse(data.candidates[0].content.parts[0].text);
-      
-      setAppraisals(prev => ({ ...prev, [selectedEquip]: { grade: rolledGrade, name: parsed.name, text: parsed.lore } }));
-      addLog(`[감정 완료] [${rolledGrade.name}] 등급의 '${parsed.name}'(을)를 얻었습니다! (배율 x${rolledGrade.mult})`, 'success');
-    } catch (error) {
-      addLog('장비 감정에 실패했습니다.', 'danger');
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks', user.uid), {
+        uid: user.uid,
+        name: String(playerName),
+        combatPower: Number(myCombatPower),
+        level: Number(playerData.level),
+        weaponLevel: Number(equipment.weapon),
+        pvpWins: Number(statistics.pvpWins || 0),
+        pvpLosses: Number(statistics.pvpLosses || 0),
+        arenaPoints: Number(statistics.arenaPoints || 0),
+        lastPvpAt: Number(statistics.lastPvpAt || 0),
+        updatedAt: Date.now()
+      }, { merge: true });
+      addLog('클라우드에 내 정보를 동기화했습니다.', 'success');
+    } catch (e) {
+      addLog('동기화 실패: 네트워크 및 설정을 확인하세요.', 'danger');
+      console.error(e);
+      if (e?.code === 'permission-denied') {
+        addLog('[Firestore] 권한 없음: Cloud Firestore Rules에서 read/write 권한을 허용해야 합니다.', 'danger');
+        setIsOfflineMode(true);
+      }
     } finally {
-      setIsAppraising(false);
+      setIsSyncing(false);
     }
   };
 
-  const generateArenaOpponent = () => {
-    const oppLevel = Math.max(0, equipment.weapon + Math.floor(Math.random() * 5) - 2);
-    const oppPlayerLevel = Math.max(1, playerData.level + Math.floor(Math.random() * 5) - 2);
-    const oppGrade = rollAppraisalGrade(oppLevel);
-    
-    let oppDamage = (oppPlayerLevel * 3) + 10 + Math.floor(Math.pow(oppLevel, 1.85));
-    oppDamage = Math.floor(oppDamage * oppGrade.mult);
+  const quickMatch = () => {
+    const candidates = (rankings || []).filter(rk => rk && rk.uid && rk.uid !== user?.uid);
+    const withinRange = candidates.filter(rk => {
+      const cp = Number(rk.combatPower || 0);
+      if (cp <= 0) return false;
+      return cp >= myCombatPower * 0.7 && cp <= myCombatPower * 1.3;
+    });
 
-    setArenaOpponent({ name: `망령 검사`, weaponLevel: oppLevel, playerLevel: oppPlayerLevel, grade: oppGrade, damage: oppDamage });
-    setArenaResult(null); 
+    const pool = withinRange.length > 0 ? withinRange : candidates;
+    if (pool.length === 0) {
+      const bot = {
+        uid: `bot_${Date.now()}`,
+        name: 'WANDERER',
+        level: Math.max(1, Math.floor(playerData.level * (0.8 + Math.random() * 0.4))),
+        weaponLevel: Math.max(0, Math.floor(equipment.weapon * (0.7 + Math.random() * 0.6))),
+        combatPower: Math.max(1, Math.floor(myCombatPower * (0.75 + Math.random() * 0.5))),
+        arenaPoints: 1000
+      };
+      setPvpOpponent(bot);
+    } else {
+      setPvpOpponent(pool[Math.floor(Math.random() * pool.length)]);
+    }
+    setPvpResult(null);
+    setActiveModal('pvp_clash');
   };
 
-  const handleArenaClash = () => {
-    if (!arenaOpponent || isAttacking) return;
-    setIsAttacking(true);
-
-    const myRoll = baseComputedDamage * (0.8 + Math.random() * 0.4);
-    // 방어구에 의한 투기장 피해 감소 처리
-    const mitigation = getDamageMitigation(equipment.armor);
-    const oppRoll = (arenaOpponent.damage * (0.8 + Math.random() * 0.4)) * (1 - mitigation);
+  /* const executePvp = async () => {
+    if (!pvpOpponent) return;
+    setIsAnimating(true);
+    const myRoll = myCombatPower * (0.8 + Math.random() * 0.4);
+    const oppRoll = pvpOpponent.combatPower * (0.8 + Math.random() * 0.4);
 
     setTimeout(() => {
-      setIsAttacking(false);
+      setIsAnimating(false);
       const isWin = myRoll >= oppRoll;
-      let reward = 0;
-
       if (isWin) {
-        reward = 500 + (winStreak * 200) + (arenaOpponent.playerLevel * 100);
-        setGold(prev => prev + reward);
-        setWinStreak(prev => prev + 1);
-        setStats(s => ({ ...s, arenaWins: s.arenaWins + 1 }));
-        gainExp(reward / 5);
-        addLog(`⚔️ [투기장 승리] 보상: ${reward.toLocaleString()}G`, 'success');
-      } else {
-        setWinStreak(0);
-        addLog(`💀 [투기장 패배] 연승 초기화`, 'danger');
+        const reward = 1000 + ((pvpOpponent.level || 0) * 100);
+        setGold(g => g + reward);
+        addLog(`⚔️ 결투 승리! 보상 ${reward}G 획득`, 'success');
+      } else { addLog(`⚔️ 결투 패배...`, 'danger'); }
+      setPvpResult({ isWin, myRoll: Math.floor(myRoll), oppRoll: Math.floor(oppRoll) });
+    }, 1200);
+  }; */
+
+  const executePvp = async () => {
+    if (!pvpOpponent) return;
+    if (isAnimating) return;
+
+    const now = Date.now();
+    const cooldownMs = 10_000;
+    const until = (statistics.lastPvpAt || 0) + cooldownMs;
+    if (now < until) {
+      const remain = Math.ceil((until - now) / 1000);
+      addLog(`Wait... ${remain}s`, 'warning');
+      return;
+    }
+
+    setIsAnimating(true);
+    const myRoll = myCombatPower * (0.75 + Math.random() * 0.5);
+    const oppRoll = Number(pvpOpponent.combatPower || 0) * (0.75 + Math.random() * 0.5);
+
+    await new Promise(r => setTimeout(r, 1200));
+    setIsAnimating(false);
+
+    const isWin = myRoll >= oppRoll;
+    const rewardGold = isWin ? (700 + (Number(pvpOpponent.level || 0) * 120)) : 0;
+    const pointDelta = isWin ? 25 : -15;
+    const nextLast = Date.now();
+
+    setPvpResult({
+      isWin,
+      myRoll: Math.floor(myRoll),
+      oppRoll: Math.floor(oppRoll),
+      pointDelta,
+      rewardGold
+    });
+
+    if (rewardGold > 0) setGold(g => g + rewardGold);
+
+    setStatistics(s => ({
+      ...s,
+      totalGoldEarned: (s.totalGoldEarned || 0) + rewardGold,
+      pvpWins: (s.pvpWins || 0) + (isWin ? 1 : 0),
+      pvpLosses: (s.pvpLosses || 0) + (isWin ? 0 : 1),
+      arenaPoints: Math.max(0, (s.arenaPoints || 0) + pointDelta),
+      lastPvpAt: nextLast
+    }));
+
+    if (isWin) addLog(`VICTORY +${pointDelta} AP / +${rewardGold}G`, 'success');
+    else addLog(`DEFEAT ${pointDelta} AP`, 'danger');
+
+    if (!isOfflineMode && user && playerName) {
+      try {
+        const nextWins = (statistics.pvpWins || 0) + (isWin ? 1 : 0);
+        const nextLosses = (statistics.pvpLosses || 0) + (isWin ? 0 : 1);
+        const nextAp = Math.max(0, (statistics.arenaPoints || 0) + pointDelta);
+
+        await setDoc(
+          doc(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks', user.uid),
+          {
+            uid: user.uid,
+            name: String(playerName),
+            combatPower: Number(myCombatPower),
+            level: Number(playerData.level),
+            weaponLevel: Number(equipment.weapon),
+            pvpWins: Number(nextWins),
+            pvpLosses: Number(nextLosses),
+            arenaPoints: Number(nextAp),
+            lastPvpAt: Number(nextLast),
+            updatedAt: Date.now()
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.error('PvP result sync failed:', e);
+        if (e?.code === 'permission-denied') {
+          addLog('[PvP] Firestore 저장 권한이 없어 기록을 업로드하지 못했습니다. (Rules 확인 필요)', 'danger');
+          setIsOfflineMode(true);
+        }
       }
-      setArenaResult({ isWin, reward, myRoll: Math.floor(myRoll), oppRoll: Math.floor(oppRoll), mitigation: Math.floor(mitigation*100) });
-    }, 800);
-  };
-
-  const handleListenBard = async () => {
-    if (isBardSinging) return;
-    if (gold < currentTavernCost) return addLog(`골드가 부족합니다. (필요: ${currentTavernCost.toLocaleString()}G)`, 'warning');
-
-    setIsBardSinging(true);
-    setGold(prev => prev - currentTavernCost);
-    setStats(s => ({ ...s, tavernVisits: s.tavernVisits + 1 }));
-    addLog(`🎵 음유시인에게 ${currentTavernCost.toLocaleString()}G를 주고 연주를 청합니다...`, 'info');
-
-    const apiKey = ""; 
-    const traitNames = traits.length > 0 ? traits.map(t => t.name).join(', ') : '특징 없는';
-    const weaponName = appraisals.weapon ? appraisals.weapon.name : `+${equipment.weapon} 무기`;
-
-    const prompt = `너는 판타지 세계 주점의 음유시인이야. 활약 중인 모험가에 대한 소문을 과장해서 들려줘.
-    레벨: ${playerData.level}, 성향: ${traitNames}, 무기: ${weaponName}, 보스 킬: ${stats.bossesDefeated}, 투기장: ${stats.arenaWins}승
-    영웅담이나 재미있는 헛소문을 2문장으로 작성해줘. {"title": "...", "content": "..."} 형태의 JSON으로 응답해.`;
-
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
-      });
-      const data = await response.json();
-      const parsed = JSON.parse(data.candidates[0].content.parts[0].text);
-      
-      setBardTale({ title: parsed.title, content: parsed.content });
-      
-      const isDamageBuff = Math.random() > 0.5;
-      if(isDamageBuff) {
-        setTavernBuffs(p => ({...p, damage: p.damage + 1}));
-        addLog(`[주점] 노래를 듣고 투지가 타오릅니다! (영구 데미지 +3%)`, 'success');
-      } else {
-        setTavernBuffs(p => ({...p, gold: p.gold + 1}));
-        addLog(`[주점] 노래를 듣고 상술을 터득했습니다! (영구 골드 획득 +8%)`, 'success');
-      }
-    } catch (error) {
-      addLog('음유시인이 술에 취해 노래를 부르지 못합니다.', 'danger');
-    } finally {
-      setIsBardSinging(false);
     }
   };
 
-  // --- UI Renders ---
-  if (gameState === 'intro') {
-    const currentQ = PERSONALITY_QUESTIONS[questionIndex];
+  // ==========================================
+  // [Render] View Components
+  // ==========================================
+  if (appState === 'login') {
     return (
-      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col items-center justify-center p-4 font-sans select-none">
-        <div className="w-full max-w-lg bg-gray-900 rounded-3xl p-8 shadow-2xl border border-gray-800 flex flex-col items-center text-center animate-in fade-in zoom-in duration-500">
-          <BrainCircuit className="w-16 h-16 text-purple-500 mb-6" />
-          <h1 className="text-2xl font-bold mb-2 tracking-wider">운명의 선택</h1>
-          <div className="flex gap-2 mb-6">
-            {PERSONALITY_QUESTIONS.map((_, idx) => (
-              <div key={idx} className={`w-12 h-1.5 rounded-full transition-colors duration-300 ${idx === questionIndex ? 'bg-purple-500' : 'bg-gray-800'}`} />
-            ))}
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 font-sans relative">
+        {isOfflineMode && (
+          <div className="absolute top-4 w-full max-w-md bg-yellow-500/20 border border-yellow-500 text-yellow-500 p-3 rounded-lg text-xs font-bold text-center flex items-center justify-center gap-2">
+            <ZapOff className="w-4 h-4" /> 오프라인 모드: 클라우드 연동 불가
           </div>
-          <p className="text-gray-300 mb-8 leading-relaxed text-balance min-h-[3rem]">{currentQ.text}</p>
-          <div className="flex flex-col gap-3 w-full">
-            {currentQ.answers.map((ans, idx) => (
+        )}
+        <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl animate-in zoom-in">
+          <BrainCircuit className="w-16 h-16 text-blue-500 mx-auto mb-6" />
+          <h1 className="text-2xl font-bold text-center mb-2">모험의 서</h1>
+          <p className="text-zinc-500 text-center text-sm mb-8">기존 플레이어는 동일한 이름을 입력하여 데이터를 불러오세요.</p>
+          <input 
+            type="text" placeholder="이름 입력 (최대 10자)" maxLength={10}
+            onKeyDown={(e) => { if(e.key === 'Enter') handleLogin(e.target.value); }}
+            className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-4 text-center text-xl font-bold focus:border-blue-500 outline-none mb-4"
+          />
+          <p className="text-xs text-zinc-600 text-center">입력 후 Enter 키를 누르세요.</p>
+        </div>
+
+        {pinPrompt.open && (
+          <div className="fixed inset-0 bg-black/90 z-[60] p-6 flex items-center justify-center animate-in fade-in">
+            <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+              <button onClick={closePinPrompt} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+              <h2 className="text-xl font-black mb-2 flex items-center gap-2"><Shield className="w-5 h-5 text-blue-500" /> PIN 확인</h2>
+              <p className="text-xs text-zinc-500 mb-4">프로필: <span className="text-zinc-300 font-bold">{pendingLogin?.name}</span></p>
+              <input
+                type="password"
+                inputMode="numeric"
+                placeholder="PIN (4~12자리 숫자)"
+                value={pinPrompt.pin}
+                onChange={(e) => setPinPrompt(p => ({ ...p, pin: e.target.value, error: '' }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') confirmPinLogin(); }}
+                className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center text-lg font-black tracking-widest focus:border-blue-500 outline-none"
+              />
+              {pinPrompt.error && <div className="mt-3 text-xs text-red-400 font-bold">{pinPrompt.error}</div>}
+              <button onClick={confirmPinLogin} disabled={pinPrompt.busy} className="w-full mt-4 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-black disabled:opacity-50 flex items-center justify-center gap-2">
+                {pinPrompt.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} 확인
+              </button>
+              <button onClick={resetProfileWithoutPin} disabled={pinPrompt.busy} className="w-full mt-2 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-bold text-xs disabled:opacity-50">
+                PIN 분실? 새로 시작(데이터 삭제)
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (appState === 'intro') {
+    const q = PERSONALITY_QUESTIONS[questionIndex];
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 font-sans">
+        <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-8 animate-in fade-in">
+          <h1 className="text-xl font-bold mb-6 text-center text-blue-400">당신의 본질을 묻습니다</h1>
+          <p className="text-zinc-300 mb-8 min-h-[3rem] text-center leading-relaxed">{q.text}</p>
+          <div className="space-y-3">
+            {q.answers.map((ans, idx) => (
               <button key={idx} onClick={() => {
-                const newTraits = [...traits, ans.trait];
+                const newVotes = [...introVotes, ans.trait];
                 if (questionIndex < PERSONALITY_QUESTIONS.length - 1) {
-                  setTraits(newTraits); setQuestionIndex(prev => prev + 1);
+                  setIntroVotes(newVotes); setQuestionIndex(p => p + 1);
                 } else {
-                  setTraits(newTraits); setGameState('playing'); addLog(`[운명의 결속] 특성이 무기에 깃들었습니다!`, 'success');
+                  const counts = newVotes.reduce((acc, t) => ({ ...acc, [t.id]: (acc[t.id] || 0) + 1 }), {});
+                  const ranked = Object.values(TRAITS).slice().sort((a, b) => (counts[b.id] || 0) - (counts[a.id] || 0) || a.id.localeCompare(b.id));
+                  const finalTraits = ranked.filter(t => (counts[t.id] || 0) > 0).slice(0, 2);
+
+                  setTraits(finalTraits);
+                  setIntroVotes([]);
+                  setQuestionIndex(0);
+                  setAppState('trait_result');
                 }
-              }} className="w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 text-sm text-gray-200 p-4 rounded-xl transition-all border border-gray-700 text-left flex justify-between items-center group hover:scale-[1.02]">
-                <span>{ans.text}</span><Shield className={`w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity ${ans.trait.color}`} />
+              }} className="w-full p-4 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-sm border border-zinc-700 transition-all text-left flex justify-between">
+                {ans.text} <Shield className={`w-4 h-4 ${ans.trait.color}`} />
               </button>
             ))}
           </div>
@@ -629,439 +1168,543 @@ export default function App() {
     );
   }
 
+  if (appState === 'trait_result') {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 font-sans">
+        <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-8 animate-in fade-in">
+          <h1 className="text-xl font-black mb-2 text-center text-blue-400">특성 부여 완료</h1>
+          <p className="text-zinc-500 text-center text-sm mb-6">당신에게 부여된 특성(상위 2개)입니다.</p>
+
+          <div className="space-y-3 mb-6">
+            {traits.length === 0 ? (
+              <div className="text-center text-zinc-500 text-sm py-6">특성을 결정하지 못했습니다.</div>
+            ) : (
+              traits.map(t => (
+                <div key={t.id} className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+                  <div className={`text-sm font-black ${t.color}`}>{t.name}</div>
+                  <div className="text-[11px] text-zinc-500 mt-1">{t.desc}</div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <button onClick={() => { setAppState('playing'); addLog('특성이 결정되었습니다. 모험을 시작합니다.', 'success'); }} className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-black">
+            게임 시작
+          </button>
+          <button onClick={() => { setAppState('intro'); setQuestionIndex(0); setIntroVotes([]); setTraits([]); }} className="w-full mt-2 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl font-bold text-xs">
+            다시 선택
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const CurrentEquipIcon = EQUIP_TYPES[selectedEquip].icon;
   const currentBoss = getBossConfig(stage);
   const bossHpPercent = Math.max(0, (bossHp / currentBoss.maxHp) * 100);
-  const reqExp = getReqExp(playerData.level);
-  const expPercent = Math.min(100, (playerData.exp / reqExp) * 100);
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 font-sans select-none overflow-x-hidden p-4 flex flex-col items-center">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans p-4 flex flex-col items-center select-none overflow-x-hidden relative">
       
-      {/* Top Menu Buttons */}
-      <div className="w-full max-w-md flex flex-wrap justify-center gap-2 mb-4">
-        <button onClick={() => setActiveModal('traits')} className="flex-1 min-w-[60px] bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl py-2 flex justify-center items-center gap-1.5 text-xs text-gray-300 transition-colors relative">
-          <User className="w-4 h-4" /> 스탯
-          {playerData.traitPoints > 0 && <span className="absolute -top-1 -right-1 bg-purple-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full animate-bounce">{playerData.traitPoints}</span>}
-        </button>
-        <button onClick={() => setActiveModal('achievements')} className="flex-1 min-w-[60px] bg-gray-900 hover:bg-gray-800 border border-gray-800 rounded-xl py-2 flex justify-center items-center gap-1.5 text-xs text-gray-300 transition-colors relative">
-          <Trophy className={`w-4 h-4 ${Object.keys(achievementLevels).length > 0 ? 'text-yellow-500' : ''}`} /> 업적
-        </button>
-        <button onClick={() => { setActiveModal('arena'); if(!arenaOpponent) generateArenaOpponent(); }} className="flex-1 min-w-[60px] bg-red-950/40 hover:bg-red-900/60 border border-red-900/50 rounded-xl py-2 flex justify-center items-center gap-1.5 text-xs text-red-300 transition-colors">
-          <Swords className="w-4 h-4" /> 결투
-        </button>
-        <button onClick={() => setActiveModal('tavern')} className="flex-1 min-w-[60px] bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-900/50 rounded-xl py-2 flex justify-center items-center gap-1.5 text-xs text-emerald-300 transition-colors">
-          <Music className="w-4 h-4" /> 주점
-        </button>
-        <button onClick={() => setActiveModal('rebirth')} className="flex-1 min-w-[60px] bg-blue-950/40 hover:bg-blue-900/60 border border-blue-900/50 rounded-xl py-2 flex justify-center items-center gap-1.5 text-xs text-blue-300 transition-colors relative">
-          <Infinity className="w-4 h-4" /> 환생
-          {soulStones > 0 && <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{soulStones}</span>}
-        </button>
+      {/* Floating Resource Bar (우측 상단 고정) */}
+      <div className="fixed top-4 right-4 z-50 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-full px-4 py-2 flex items-center gap-4 shadow-2xl">
+        <div className="flex items-center gap-1.5"><Coins className="w-4 h-4 text-yellow-500" /><span className="font-mono font-bold text-sm">{gold.toLocaleString()}</span></div>
+        <div className="w-px h-4 bg-zinc-700" />
+        <div className="flex items-center gap-1.5"><Gem className="w-4 h-4 text-cyan-400" /><span className="font-mono font-bold text-sm">{stones.toLocaleString()}</span></div>
       </div>
 
-      {/* Header Resources & Player EXP */}
-      <div className="w-full max-w-md bg-gray-900 rounded-2xl p-4 shadow-lg flex flex-col gap-3 border border-gray-800 mb-4">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <Coins className="text-yellow-400 w-5 h-5" />
-            <span className="font-mono text-xl font-bold">{gold.toLocaleString()}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Gem className="text-cyan-400 w-5 h-5" />
-            <span className="font-mono text-xl font-bold">{stones.toLocaleString()}</span>
-          </div>
+      {/* Top Navigation */}
+      <div className="w-full max-w-md flex justify-between items-center mb-4 px-2 mt-2">
+        <div>
+          <span className="text-xs text-zinc-500 font-bold uppercase tracking-widest">Wanderer</span>
+          <h2 className="text-lg font-black flex items-center gap-2">{playerName} <span className="text-blue-500 text-sm">Lv.{playerData.level}</span></h2>
         </div>
-        
-        <div className="bg-gray-950 rounded-lg p-2 border border-gray-800/50">
-          <div className="flex justify-between text-xs mb-1">
-            <span className="text-purple-400 font-bold flex items-center gap-1"><Zap className="w-3 h-3" /> Lv.{playerData.level}</span>
-            <span className="text-gray-500 font-mono">{Math.floor(playerData.exp)} / {reqExp} EXP</span>
-          </div>
-          <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-            <div className="h-full bg-purple-500 transition-all duration-300" style={{ width: `${expPercent}%` }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Boss Raid Panel */}
-      <div className="w-full max-w-md bg-gray-900 rounded-3xl p-6 shadow-2xl border border-red-900/30 relative overflow-hidden mb-4">
-        <div className="absolute inset-0 bg-gradient-to-t from-red-900/10 to-transparent pointer-events-none" />
-        
-        {/* Floating Damage Texts */}
-        <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden">
-          {damageTexts.map(t => (
-            <div key={t.id} 
-                 className={`absolute left-1/2 top-1/2 font-black text-center whitespace-nowrap -translate-x-1/2 -translate-y-1/2 animate-in fade-in slide-in-from-bottom-8 duration-500 fill-mode-forwards opacity-0 ${t.isCrit ? 'text-red-400 text-3xl drop-shadow-[0_0_8px_rgba(239,68,68,0.8)] scale-125' : 'text-white text-xl drop-shadow-md'}`}
-                 style={{ transform: `translate(calc(-50% + ${t.x}px), calc(-50% + ${t.y}px))` }}>
-              {t.isCrit && <span className="text-yellow-300 text-sm block -mb-1">CRITICAL</span>}-{t.amount.toLocaleString()}
-            </div>
-          ))}
-        </div>
-
-        <div className="flex justify-between items-end mb-4 relative z-10">
-          <div>
-            <span className="text-xs font-bold text-red-500 tracking-widest uppercase block mb-1">Stage {stage + 1}</span>
-            <h2 className={`text-xl font-bold ${currentBoss.color} flex items-center gap-2`}><currentBoss.icon className="w-6 h-6" /> {currentBoss.name}</h2>
-          </div>
-          <div className="text-right">
-            <span className="text-sm font-mono text-gray-300 block">HP: {bossHp.toLocaleString()} / {currentBoss.maxHp.toLocaleString()}</span>
-          </div>
-        </div>
-        <div className="w-full h-4 bg-gray-800 rounded-full overflow-hidden mb-5 border border-gray-700 shadow-inner relative z-10">
-          <div className="h-full bg-gradient-to-r from-red-600 to-red-400 transition-all duration-300" style={{ width: `${bossHpPercent}%` }} />
-        </div>
-        <button onClick={handleAttack} disabled={bossHp <= 0 || isAttacking || isAnimating}
-          className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all duration-100 relative z-20
-            ${bossHp <= 0 ? 'bg-gray-800 text-gray-500 border border-gray-700' : 'bg-red-950/50 hover:bg-red-900 border border-red-700/50 text-red-100 hover:shadow-[0_0_15px_rgba(220,38,38,0.3)]'}
-            ${isAttacking ? 'scale-95' : ''}
-          `}>
-          <Target className="w-5 h-5" />
-          {bossHp <= 0 ? '다음 스테이지 준비 중...' : '무기 공격 (클릭)'}
-        </button>
-      </div>
-
-      {/* Equipment Selector (Tabs) */}
-      <div className="w-full max-w-md flex bg-gray-900 rounded-2xl p-1.5 border border-gray-800 mb-2">
-        {Object.entries(EQUIP_TYPES).map(([key, equip]) => (
-          <button key={key} onClick={() => setSelectedEquip(key)}
-            className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${selectedEquip === key ? 'bg-gray-800 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}>
-            <equip.icon className="w-4 h-4" /> {equip.name} <span className="text-xs font-mono ml-1">+{equipment[key]}</span>
+        <div className="flex gap-2">
+          <button onClick={() => { setActiveModal('security'); setPinSettings({ current: '', next: '', confirm: '', error: '', busy: false }); }} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-300 relative">
+            <Settings className="w-5 h-5" />
+            {hasLocalPin && <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full" />}
           </button>
-        ))}
-      </div>
-
-      {/* Main Equipment Display */}
-      <div className="w-full max-w-md bg-gray-900 rounded-3xl p-6 shadow-2xl border border-gray-800 flex flex-col items-center relative overflow-hidden mb-4">
-        {currentAppraisal && (
-          <div className={`absolute top-4 left-4 px-3 py-1 rounded-full text-xs font-bold border bg-gray-950/80 backdrop-blur-sm ${currentAppraisal.grade.color} border-current`}>
-            {currentAppraisal.grade.name} 등급
-          </div>
-        )}
-
-        <h1 className="text-2xl font-bold mb-1 mt-4 tracking-wider text-center z-10">
-          <span className={currentAppraisal ? currentAppraisal.grade.color : currentConfig.color}>
-            {currentEquipLevel === 0 && !currentAppraisal ? `평범한 ${EQUIP_TYPES[selectedEquip].name}` : `+${currentEquipLevel} ${currentAppraisal?.name || `알 수 없는 ${EQUIP_TYPES[selectedEquip].name}`}`}
-          </span>
-        </h1>
-        
-        <div className="text-gray-400 mb-4 font-mono z-10 flex flex-col items-center">
-          {selectedEquip === 'weapon' ? (
-            <div className="flex items-center gap-2">
-              <span>공격력: <span className="text-white font-bold text-xl">{baseComputedDamage.toLocaleString()}</span></span>
-              {currentAppraisal && currentAppraisal.grade.mult > 1 && <span className={`text-xs ${currentAppraisal.grade.color}`}>(x{currentAppraisal.grade.mult})</span>}
-            </div>
-          ) : selectedEquip === 'armor' ? (
-            <div className="text-sm text-blue-300">투기장 피해 감소: {(getDamageMitigation(equipment.armor) * 100).toFixed(0)}%</div>
-          ) : (
-             <div className="text-sm text-yellow-300">자원 획득량 보너스: +{(equipment.ring * 5)}%</div>
-          )}
-        </div>
-
-        {/* Dynamic Equip Icon */}
-        <div className={`relative p-6 rounded-full mb-6 transition-all duration-500 z-10
-          ${isAnimating ? 'animate-bounce scale-110' : ''} ${isAttacking && selectedEquip === 'weapon' ? '-translate-y-4 scale-105 duration-75' : ''}
-          ${currentConfig.glow} shadow-[0_0_40px_rgba(0,0,0,0.5)] bg-gray-800
-        `}>
-          {React.createElement(EQUIP_TYPES[selectedEquip].icon, { className: `w-20 h-20 ${currentConfig.color} ${currentEquipLevel >= 20 ? 'animate-pulse' : ''}` })}
-        </div>
-
-        {/* Info & Probabilities */}
-        <div className="w-full bg-gray-950 rounded-xl p-4 border border-gray-800 z-10">
-          <div className="flex justify-between text-sm mb-2">
-            <span className="text-gray-400">강화 비용</span>
-            <span className="font-mono">
-              <span className={gold >= currentConfig.gold ? 'text-yellow-400' : 'text-red-400'}>{currentConfig.gold.toLocaleString()}G</span>
-              <span className="text-gray-500 mx-1">/</span>
-              <span className={stones >= currentConfig.stone ? 'text-cyan-400' : 'text-red-400'}>{currentConfig.stone.toLocaleString()}석</span>
-            </span>
-          </div>
-          
-          <div className="flex gap-1 h-2 rounded-full overflow-hidden bg-gray-800">
-            <div style={{ width: `${currentConfig.success}%` }} className="bg-green-500" />
-            <div style={{ width: `${100 - currentConfig.success - currentConfig.drop - currentConfig.destroy}%` }} className="bg-gray-500" />
-            <div style={{ width: `${currentConfig.drop}%` }} className="bg-orange-500" />
-            <div style={{ width: `${currentConfig.destroy}%` }} className="bg-red-600" />
-          </div>
-          
-          <div className="flex justify-between text-xs mt-2 text-gray-500">
-            <span className="text-green-500 font-bold flex items-center gap-1">
-              성공 {currentConfig.success.toFixed(1)}%
-              {(currentConfig.failStackBonus > 0 || currentConfig.levelBonus > 0) && (
-                <span className="text-purple-400 flex items-center text-[10px]"><ArrowUpCircle className="w-3 h-3 mr-0.5" />보정</span>
-              )}
-            </span>
-            {currentConfig.drop > 0 && <span className="text-orange-500">하락 {currentConfig.drop.toFixed(1)}%</span>}
-            {currentConfig.destroy > 0 && <span className="text-red-500">파괴 {currentConfig.destroy.toFixed(1)}%</span>}
-          </div>
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="w-full max-w-md flex flex-col gap-3 mb-4">
-        <div className="flex gap-3 w-full">
-          <button onClick={handleFarm} disabled={isAnimating || isAppraising || bossHp <= 0} className="flex-1 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 text-white rounded-xl py-4 flex flex-col items-center justify-center gap-2 transition-colors border border-gray-700 disabled:opacity-50">
-            <Pickaxe className="w-5 h-5" />
-            <span className="font-bold text-sm">광물 캐기</span>
+          <button onClick={() => setActiveModal('feedback')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-emerald-300 relative">
+            <MessageSquare className="w-5 h-5" />
           </button>
-          <button onClick={handleEnhance} disabled={isAnimating || isAppraising || bossHp <= 0 || currentEquipLevel >= MAX_LEVEL} className={`flex-1 rounded-xl py-4 flex flex-col items-center justify-center gap-2 transition-all font-bold text-sm ${currentEquipLevel >= MAX_LEVEL ? 'bg-gray-800 text-gray-500' : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white shadow-lg shadow-blue-900/50'} ${(isAnimating || isAppraising || bossHp <= 0) ? 'opacity-50' : ''}`}>
-            <Hammer className="w-5 h-5" />
-            <span>{currentEquipLevel >= MAX_LEVEL ? 'MAX LEVEL' : '강화하기'}</span>
+              <button onClick={() => setActiveModal('rebirth')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-purple-400"><InfinityIcon className="w-5 h-5" /></button>
+          <button onClick={() => setActiveModal('achievements')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-yellow-500 relative">
+            <Trophy className="w-5 h-5" />
+            {Object.keys(achievementLevels).length > 0 && <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full" />}
+          </button>
+          <button onClick={() => { setActiveModal('pvp'); if(!isOfflineMode) syncProfile(); }} className="p-2 bg-red-950/40 rounded-lg border border-red-900/50 hover:bg-red-900 text-red-400 relative">
+            <Swords className="w-5 h-5" />
+            {isOfflineMode && <ZapOff className="w-3 h-3 text-yellow-500 absolute -top-1 -right-1 bg-zinc-900 rounded-full" />}
+          </button>
+          <button onClick={() => setActiveModal('stats')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-blue-400 relative">
+            <User className="w-5 h-5" />
+            {playerData.traitPoints > 0 && <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse" />}
           </button>
         </div>
-        <button onClick={handleAppraise} disabled={isAnimating || isAppraising || bossHp <= 0} className="w-full bg-gradient-to-r from-purple-900 to-indigo-900 hover:from-purple-800 text-purple-200 rounded-xl py-3 flex items-center justify-center gap-2 transition-all border border-purple-500/30 disabled:opacity-50 relative overflow-hidden">
-          {isAppraising && <div className="absolute inset-0 bg-purple-500/20 animate-pulse" />}
-          {isAppraising ? <Loader2 className="w-4 h-4 animate-spin text-purple-300 relative z-10" /> : <ScrollText className="w-4 h-4 text-purple-300 relative z-10" />}
-          <span className="font-bold tracking-wide text-sm relative z-10">
-            {isAppraising ? '무기 감정 중...' : `✨ 대장장이에게 ${EQUIP_TYPES[selectedEquip].name} 감정 의뢰하기 ✨`}
-          </span>
-        </button>
       </div>
 
-      {/* System Logs */}
-      <div className="w-full max-w-md bg-gray-900 rounded-2xl p-4 border border-gray-800 shadow-lg h-32 flex flex-col">
-        <h3 className="text-gray-400 text-xs font-bold mb-2 uppercase tracking-widest flex items-center gap-2"><AlertCircle className="w-4 h-4" /> 시스템 로그</h3>
-        <div ref={logsContainerRef} className="flex-1 overflow-y-auto custom-scrollbar -mr-2 pr-2 scroll-smooth">
-          <div className="flex flex-col gap-1">
-            {logs.map((log) => (
-              <div key={log.id} className={`text-xs py-1.5 px-2 rounded font-mono break-keep ${log.type === 'success' ? 'bg-green-500/10 text-green-400' : log.type === 'danger' ? 'bg-red-500/10 text-red-400' : log.type === 'warning' ? 'bg-orange-500/10 text-orange-400' : log.type === 'farm' ? 'text-gray-400' : 'text-gray-300'}`}>{log.text}</div>
+      {/* Resources & Boss Panel */}
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-4 mb-4 shadow-xl">
+        {/* Boss Raid Panel */}
+        <div className="relative overflow-hidden bg-black/50 rounded-xl p-4 border border-zinc-800/50 text-center">
+          <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden">
+            {damageTexts.map(t => (
+              <div key={t.id} className={`absolute left-1/2 top-1/2 font-black whitespace-nowrap -translate-x-1/2 -translate-y-1/2 animate-in fade-in slide-in-from-bottom-4 duration-500 fill-mode-forwards opacity-0 ${t.isCrit ? 'text-red-400 text-2xl drop-shadow-md scale-125' : 'text-white text-lg'}`} style={{ transform: `translate(calc(-50% + ${t.x}px), calc(-50% + ${t.y}px))` }}>
+                {t.isCrit && <span className="text-yellow-300 text-[10px] block -mb-1">CRIT</span>}-{t.amount.toLocaleString()}
+              </div>
             ))}
           </div>
+          <div className="flex justify-between items-end mb-2">
+            <div className="flex items-center gap-2 text-sm font-bold"><currentBoss.icon className={`w-5 h-5 ${currentBoss.color}`} /> {currentBoss.name}</div>
+            <span className="text-[10px] font-mono text-zinc-500">HP: {bossHp.toLocaleString()} / {currentBoss.maxHp.toLocaleString()}</span>
+          </div>
+          <div className="w-full h-2 bg-zinc-900 rounded-full overflow-hidden mb-3 border border-zinc-800">
+            <div className="h-full bg-red-600 transition-all duration-300" style={{ width: `${bossHpPercent}%` }} />
+          </div>
+          <button onClick={handleAttack} disabled={bossHp <= 0} className="w-full py-2 bg-red-950/40 hover:bg-red-900 border border-red-900/50 text-red-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+            <Target className="w-4 h-4" /> {bossHp <= 0 ? '리스폰 대기중...' : '무기 공격'}
+          </button>
+        </div>
+      </div>
+
+      <div className="w-full max-w-md flex justify-between items-end px-2 mb-2">
+        <span className="text-xs text-blue-400 font-bold">COMBAT POWER</span>
+        <span className="text-xl font-black text-white">{myCombatPower.toLocaleString()} CP</span>
+      </div>
+
+      {/* Equipment Display */}
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 mb-4 flex flex-col items-center relative">
+        {appraisals[selectedEquip] && <div className={`absolute top-4 left-4 text-[10px] font-black px-2 py-0.5 rounded border border-current ${appraisals[selectedEquip].grade.color}`}>{appraisals[selectedEquip].grade.name}</div>}
+        
+        <div className="mt-4 mb-6">
+          <div className={`w-28 h-28 bg-zinc-950 rounded-full border-2 flex items-center justify-center shadow-2xl transition-all duration-300 ${isAnimating ? 'scale-110 rotate-12 bg-zinc-800' : ''} ${appraisals[selectedEquip] ? 'border-blue-500/50' : 'border-zinc-800'}`}>
+            <CurrentEquipIcon className={`w-14 h-14 ${appraisals[selectedEquip]?.grade.color || 'text-zinc-600'} ${equipment[selectedEquip] >= 10 ? 'drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]' : ''}`} />
+          </div>
+        </div>
+        
+        <h3 className="text-xl font-black mb-1 text-center"><span className={appraisals[selectedEquip]?.grade.color || 'text-white'}>+{equipment[selectedEquip]} {appraisals[selectedEquip]?.name || `무명의 ${EQUIP_TYPES[selectedEquip].name}`}</span></h3>
+        <p className="text-xs text-zinc-500 text-center px-8 mb-4 line-clamp-2 italic">"{appraisals[selectedEquip]?.text || '아직 감정되지 않은 장비입니다.'}"</p>
+        
+        <div className="w-full bg-zinc-950 rounded-xl p-3 border border-zinc-800 mb-2">
+          <div className="flex justify-between text-[10px] text-zinc-500 font-bold mb-1">
+            <span>ENHANCE SUCCESS</span><span className="text-green-400">{(ENHANCE_TIERS.find(t => equipment[selectedEquip] < t.threshold)?.success || 10).toFixed(1)}%</span>
+          </div>
+          <div className="w-full h-1 bg-zinc-900 rounded-full overflow-hidden"><div className="h-full bg-green-500" style={{ width: `${ENHANCE_TIERS.find(t => equipment[selectedEquip] < t.threshold)?.success || 10}%` }} /></div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="w-full max-w-md flex gap-2 mb-4">
+        {Object.entries(EQUIP_TYPES).map(([key, item]) => {
+          const Icon = item.icon;
+          return (
+            <button key={key} onClick={() => setSelectedEquip(key)} className={`flex-1 py-3 rounded-xl border flex flex-col items-center gap-1 transition-all ${selectedEquip === key ? 'bg-zinc-800 border-zinc-600' : 'bg-zinc-900 border-zinc-800 opacity-50'}`}>
+              <Icon className="w-4 h-4" /><span className="text-[10px] font-bold">+{equipment[key]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Actions */}
+      <div className="w-full max-w-md grid grid-cols-2 gap-3 mb-4">
+        <button onMouseDown={startMining} onMouseUp={stopMining} onMouseLeave={stopMining} onTouchStart={startMining} onTouchEnd={stopMining} className={`relative h-20 rounded-2xl border-2 flex flex-col items-center justify-center transition-all overflow-hidden ${isMining ? 'bg-zinc-800 border-blue-500' : 'bg-zinc-900 border-zinc-800'}`}>
+          {isMining && <div className="absolute bottom-0 left-0 h-1 bg-blue-500 transition-all duration-75" style={{ width: `${mineCharge}%` }} />}
+          <Pickaxe className={`w-6 h-6 mb-1 ${isMining ? 'animate-bounce text-blue-400' : 'text-zinc-500'}`} /><span className="text-xs font-bold uppercase">{isMining ? 'Mining...' : 'Hold to Mine'}</span>
+        </button>
+        <button onClick={handleEnhance} disabled={isAnimating || isMining} className="h-20 bg-blue-600 hover:bg-blue-500 rounded-2xl flex flex-col items-center justify-center transition-all shadow-lg shadow-blue-900/20 disabled:opacity-50">
+          <Hammer className={`w-6 h-6 mb-1 ${isAnimating ? 'animate-spin' : ''}`} /><span className="text-xs font-black uppercase">Enhance</span>
+        </button>
+      </div>
+      <button onClick={handleAppraisal} disabled={isAnimating || isMining || !!appraisals[selectedEquip]} className="w-full max-w-md h-12 bg-zinc-900 border border-zinc-800 rounded-xl mb-4 flex items-center justify-center gap-2 hover:bg-zinc-800 disabled:opacity-30">
+        <ScrollText className="w-4 h-4 text-zinc-500" /><span className="text-xs font-bold uppercase">{appraisals[selectedEquip] ? 'Appraised' : 'Appraisal (500G)'}</span>
+      </button>
+
+      {/* Logs */}
+      <div className="w-full max-w-md bg-black border border-zinc-900 rounded-2xl p-4 h-32 overflow-hidden flex flex-col mb-10">
+        <div className="flex items-center gap-2 mb-2 text-[10px] font-black text-zinc-600 uppercase"><Timer className="w-3 h-3" /> System Feed</div>
+        <div className="flex-1 overflow-y-auto space-y-1">
+          {logs.slice().reverse().map(log => (
+            <div key={log.id} className={`text-[10px] font-mono p-1 rounded ${log.type === 'success' ? 'text-green-400 bg-green-400/5' : log.type === 'danger' ? 'text-red-400 bg-red-400/5' : log.type === 'warning' ? 'text-yellow-400 bg-yellow-400/5' : 'text-zinc-500'}`}>
+              [{new Date().toLocaleTimeString([], { hour12: false })}] {String(log.text)}
+            </div>
+          ))}
         </div>
       </div>
 
       {/* --- Modals --- */}
-      {activeModal && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200" onClick={() => setActiveModal(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm md:max-w-md relative shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+      {/* 1. Stats Modal */}
+      {activeModal === 'stats' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-black flex items-center gap-2"><PlusCircle className="w-6 h-6 text-blue-500" /> Stats</h2><div className="bg-blue-600 px-3 py-1 rounded-full text-xs font-black">TP: {playerData.traitPoints}</div></div>
 
-            {/* Rebirth Modal Content */}
-            {activeModal === 'rebirth' && (
-              <div>
-                <h3 className="text-white text-lg font-bold mb-4 flex items-center gap-2 text-blue-400"><Infinity className="w-5 h-5" /> 환생 (Prestige)</h3>
-                <div className="flex flex-col gap-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2 pb-2">
-                  <div className="bg-blue-950/20 rounded-xl p-4 border border-blue-900/30 text-center">
-                    <p className="text-sm text-gray-300 mb-2 break-keep">환생 시 모든 장비와 레벨이 초기화되며 대신 영혼석을 얻습니다.</p>
-                    <div className="flex justify-center items-center gap-2 text-blue-300 font-bold text-lg mb-4">
-                      <Gem className="w-5 h-5" /> 현재 영혼석: {soulStones} 개
+            <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-4">
+              <div className="text-[10px] font-black text-zinc-500 uppercase mb-2">Traits</div>
+              {traits.length === 0 ? (
+                <div className="text-xs text-zinc-600">부여된 특성이 없습니다.</div>
+              ) : (
+                <div className="space-y-2">
+                  {traits.map(t => (
+                    <div key={t.id} className="flex items-center justify-between">
+                      <span className={`text-xs font-black ${t.color}`}>{t.name}</span>
+                      <span className="text-[10px] text-zinc-500">{t.desc}</span>
                     </div>
-                    <button onClick={handleRebirth} className="w-full py-3 bg-blue-800 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors">
-                      ✨ 환생하기 (예상 획득: {Math.floor((equipment.weapon + equipment.armor + equipment.ring) / 3) + Math.floor(playerData.level / 5)}개)
-                    </button>
-                  </div>
-                  
-                  <h4 className="text-sm font-bold text-gray-300 mt-2">고대 유물 (영구 보너스)</h4>
-                  {Object.entries(RELICS_CONFIG).map(([id, config]) => {
-                    const currentLevel = relics[id];
-                    const cost = getRelicCost(config, currentLevel);
-                    return (
-                      <div key={id} className="flex items-center justify-between p-3 rounded-lg bg-gray-950 border border-gray-800">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 bg-gray-900 rounded-lg text-blue-400"><config.icon className="w-5 h-5" /></div>
-                          <div>
-                            <div className="text-sm font-bold text-gray-200">{config.name} <span className="text-xs text-blue-400">Lv.{currentLevel}/{config.max}</span></div>
-                            <div className="text-xs text-gray-500">{config.desc}</div>
-                          </div>
-                        </div>
-                        <button onClick={() => handleUpgradeRelic(id)} disabled={soulStones < cost || currentLevel >= config.max} className="px-3 py-1.5 bg-blue-900/50 hover:bg-blue-800 text-blue-300 rounded-md transition-colors disabled:opacity-30 text-xs font-bold whitespace-nowrap">
-                          {currentLevel >= config.max ? 'MAX' : `${cost}석`}
-                        </button>
-                      </div>
-                    );
-                  })}
+                  ))}
                 </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              {Object.values(CUSTOM_STATS_CONFIG).map(stat => {
+                const StatIcon = stat.icon;
+                return (
+                  <div key={stat.id} className="bg-zinc-950 p-4 rounded-2xl border border-zinc-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <StatIcon className="w-5 h-5 text-zinc-500" />
+                      <div>
+                        <div className="text-sm font-bold">{stat.name} <span className="text-blue-500">Lv.{allocatedStats[stat.id]}</span></div>
+                        <div className="text-[10px] text-zinc-500">{stat.desc}</div>
+                      </div>
+                    </div>
+                    <button onClick={() => {
+                        if (playerData.traitPoints > 0 && allocatedStats[stat.id] < stat.maxLevel) {
+                          setPlayerData(p => ({ ...p, traitPoints: p.traitPoints - 1 })); setAllocatedStats(s => ({ ...s, [stat.id]: s[stat.id] + 1 }));
+                        }
+                      }} disabled={playerData.traitPoints <= 0 || allocatedStats[stat.id] >= stat.maxLevel} className="p-2 bg-zinc-800 rounded-lg hover:bg-zinc-700 disabled:opacity-20"><PlusCircle className="w-5 h-5" /></button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 1.5 Security (Local PIN) Modal */}
+      {activeModal === 'security' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <h2 className="text-2xl font-black flex items-center gap-2 mb-2"><Shield className="w-6 h-6 text-blue-500" /> Security</h2>
+            <p className="text-xs text-zinc-500 mb-6">로컬 저장 데이터(이 PC/브라우저)의 간단 잠금용 PIN입니다. 서버 계정 비밀번호가 아닙니다.</p>
+
+            <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-4">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-zinc-400">STATUS</span>
+                <span className={`text-xs font-black ${hasLocalPin ? 'text-green-400' : 'text-zinc-500'}`}>{hasLocalPin ? 'PIN SET' : 'NO PIN'}</span>
+              </div>
+            </div>
+
+            <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-6">
+              <div className="text-[10px] font-black text-zinc-500 uppercase mb-3">Screen Saver</div>
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-zinc-300 font-bold">사용</span>
+                <input
+                  type="checkbox"
+                  checked={uiSettings.screenSaverEnabled}
+                  onChange={(e) => setUiSettings(s => ({ ...s, screenSaverEnabled: e.target.checked }))}
+                />
+              </label>
+              <div className="flex items-center justify-between gap-3 mt-3">
+                <span className="text-zinc-300 font-bold text-sm">대기(초)</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={3600}
+                  value={Math.round((uiSettings.screenSaverIdleMs || DEFAULT_UI_SETTINGS.screenSaverIdleMs) / 1000)}
+                  onChange={(e) => {
+                    const seconds = Math.max(10, Math.min(3600, Number(e.target.value || 0) || 10));
+                    setUiSettings(s => ({ ...s, screenSaverIdleMs: seconds * 1000 }));
+                  }}
+                  className="w-24 bg-black border border-zinc-700 rounded-lg px-3 py-2 text-center font-mono text-sm"
+                />
+              </div>
+              <div className="text-[11px] text-zinc-500 mt-3">PIN을 설정한 경우 화면보호기 해제 시 PIN 확인을 요구합니다.</div>
+            </div>
+
+            {!hasLocalPin ? (
+              <div className="space-y-3">
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="새 PIN (4~12자리 숫자)"
+                  value={pinSettings.next}
+                  onChange={(e) => setPinSettings(s => ({ ...s, next: e.target.value, error: '' }))}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="새 PIN 확인"
+                  value={pinSettings.confirm}
+                  onChange={(e) => setPinSettings(s => ({ ...s, confirm: e.target.value, error: '' }))}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                {pinSettings.error && <div className="text-xs text-red-400 font-bold">{pinSettings.error}</div>}
+                <button onClick={saveNewPin} disabled={pinSettings.busy} className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-black disabled:opacity-50 flex items-center justify-center gap-2">
+                  {pinSettings.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} PIN 설정
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="현재 PIN"
+                  value={pinSettings.current}
+                  onChange={(e) => setPinSettings(s => ({ ...s, current: e.target.value, error: '' }))}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="새 PIN (변경 시)"
+                  value={pinSettings.next}
+                  onChange={(e) => setPinSettings(s => ({ ...s, next: e.target.value, error: '' }))}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="새 PIN 확인"
+                  value={pinSettings.confirm}
+                  onChange={(e) => setPinSettings(s => ({ ...s, confirm: e.target.value, error: '' }))}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                {pinSettings.error && <div className="text-xs text-red-400 font-bold">{pinSettings.error}</div>}
+                <button onClick={changePin} disabled={pinSettings.busy} className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-black disabled:opacity-50 flex items-center justify-center gap-2">
+                  {pinSettings.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} PIN 변경
+                </button>
+                <button onClick={removePin} disabled={pinSettings.busy} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-black text-red-300 disabled:opacity-50 flex items-center justify-center gap-2">
+                  <Trash2 className="w-4 h-4" /> PIN 해제
+                </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
 
-            {/* Ghost PvP Arena Modal */}
-            {activeModal === 'arena' && (
-              <div>
-                <h3 className="text-white text-lg font-bold mb-4 flex items-center gap-2 text-red-400"><Swords className="w-5 h-5" /> 비동기 투기장</h3>
-                
-                {arenaResult ? (
-                  <div className="flex flex-col gap-4 animate-in zoom-in-95 duration-300">
-                    <div className={`rounded-xl p-5 border text-center relative overflow-hidden ${arenaResult.isWin ? 'bg-yellow-950/30 border-yellow-700/50' : 'bg-red-950/30 border-red-900/50'}`}>
-                      <h2 className={`text-2xl font-bold mb-2 ${arenaResult.isWin ? 'text-yellow-400' : 'text-red-500'}`}>
-                        {arenaResult.isWin ? '결투 승리!' : '결투 패배...'}
-                      </h2>
-                      <div className="flex justify-around items-center mb-4 text-sm font-mono border-y border-gray-800/50 py-3">
-                        <div className="text-center">
-                          <span className="text-gray-500 block text-[10px] mb-1">내 굴림</span>
-                          <span className="text-white font-bold">{arenaResult.myRoll.toLocaleString()}</span>
-                        </div>
-                        <span className="text-gray-600 font-bold">VS</span>
-                        <div className="text-center">
-                          <span className="text-gray-500 block text-[10px] mb-1">적 굴림 (-{arenaResult.mitigation}%)</span>
-                          <span className="text-red-400 font-bold">{arenaResult.oppRoll.toLocaleString()}</span>
-                        </div>
+      {/* 2. Achievements Modal */}
+      {activeModal === 'achievements' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <h2 className="text-2xl font-black flex items-center gap-2 mb-6"><Trophy className="w-6 h-6 text-yellow-500" /> Achievements</h2>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+              {ACHIEVEMENTS_CONFIG.map(ach => {
+                const tier = achievementLevels[ach.id] || 0;
+                const isMax = tier >= ach.thresholds.length;
+                const AchIcon = ach.icon;
+                return (
+                  <div key={ach.id} className={`p-4 rounded-2xl border ${tier > 0 ? 'bg-zinc-800/80 border-zinc-600' : 'bg-zinc-950 border-zinc-800/50 opacity-60'}`}>
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className={`p-2 rounded-lg ${tier > 0 ? 'bg-yellow-500/20 text-yellow-500' : 'bg-zinc-900 text-zinc-600'}`}><AchIcon className="w-4 h-4" /></div>
+                      <div>
+                        <div className="text-sm font-bold text-gray-200">{ach.name} <span className="text-[10px] text-zinc-500">Lv.{tier}/{ach.thresholds.length}</span></div>
+                        <div className="text-[10px] text-zinc-400">{isMax ? '최종 도달!' : `다음: ${ach.getDesc(ach.thresholds[tier])}`}</div>
                       </div>
-                      {arenaResult.isWin ? (
-                        <div className="flex items-center justify-center gap-2 text-yellow-300 font-bold"><Coins className="w-5 h-5" /> 보상: {arenaResult.reward.toLocaleString()}G</div>
-                      ) : <div className="text-gray-500 text-sm">연승이 초기화되었습니다.</div>}
                     </div>
-                    <button onClick={() => { setArenaResult(null); setArenaOpponent(null); }} className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-xl transition-colors">계속하기</button>
+                    <div className={`text-[10px] font-bold px-2 py-1 rounded bg-black/50 ${tier > 0 ? 'text-purple-400' : 'text-zinc-600'}`}>버프: {ach.descPrefix} {(ach.baseValue + ach.valuePerTier * Math.max(0, tier - 1)).toFixed(2)}</div>
                   </div>
-                ) : (
-                  <div className="flex flex-col gap-4">
-                    <div className="bg-gray-950 rounded-xl p-4 border border-gray-800 text-center relative overflow-hidden">
-                      <div className="absolute top-2 right-2 flex items-center gap-1 text-xs text-yellow-500 font-bold"><Medal className="w-3 h-3"/> {winStreak}연승</div>
-                      <p className="text-sm text-gray-400 mb-2">당신의 무력 (예상치)</p>
-                      <p className="text-2xl font-mono text-white mb-1">{baseComputedDamage.toLocaleString()}</p>
-                      <p className="text-[10px] text-blue-400">방어구 피해 감소: {(getDamageMitigation(equipment.armor) * 100).toFixed(0)}%</p>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Rebirth & Relics Modal */}
+      {activeModal === 'rebirth' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <h2 className="text-2xl font-black flex items-center gap-2 mb-4 text-purple-400"><InfinityIcon className="w-6 h-6" /> Rebirth</h2>
+            <div className="bg-purple-950/20 rounded-xl p-4 border border-purple-900/30 text-center mb-6">
+              <div className="flex justify-center items-center gap-2 text-purple-300 font-bold text-lg mb-4"><Gem className="w-5 h-5" /> 보유 영혼석: {soulStones}</div>
+              <button onClick={handleRebirth} className="w-full py-3 bg-purple-800 hover:bg-purple-700 text-white font-bold rounded-xl text-sm">✨ 환생하기 (Lv.20+)</button>
+            </div>
+            <h4 className="text-xs font-bold text-zinc-500 mb-2 uppercase">고대 유물 강화</h4>
+            <div className="space-y-2">
+              {Object.entries(RELICS_CONFIG).map(([id, config]) => {
+                const currentLevel = relics[id]; const cost = getRelicCost(config, currentLevel);
+                const RelicIcon = config.icon;
+                return (
+                  <div key={id} className="flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+                    <div className="flex items-center gap-3">
+                      <RelicIcon className="w-4 h-4 text-blue-400" />
+                      <div><div className="text-xs font-bold text-gray-200">{config.name} <span className="text-blue-400">Lv.{currentLevel}</span></div></div>
                     </div>
-                    <div className="text-center text-gray-500 font-bold">VS</div>
-                    <div className="bg-red-950/20 rounded-xl p-4 border border-red-900/30 text-center min-h-[140px] flex flex-col justify-center">
-                      {arenaOpponent ? (
-                        <div className="animate-in fade-in duration-300">
-                          <h4 className="text-md font-bold text-gray-200 mb-1">{arenaOpponent.name} <span className="text-xs text-gray-500">(Lv.{arenaOpponent.playerLevel})</span></h4>
-                          <p className={`text-sm mb-3 ${arenaOpponent.grade.color}`}>+{arenaOpponent.weaponLevel} 무기 [{arenaOpponent.grade.name}]</p>
-                          <p className="text-xs text-gray-400 mb-1">상대 전투력 (예상치)</p>
-                          <p className="text-xl font-mono text-red-300">{arenaOpponent.damage.toLocaleString()}</p>
-                        </div>
-                      ) : <p className="text-sm text-gray-400">상대를 찾고 있습니다...</p>}
-                    </div>
-                    {arenaOpponent ? (
-                      <button onClick={handleArenaClash} disabled={isAttacking} className="w-full py-3 bg-red-800 hover:bg-red-700 text-white font-bold rounded-xl transition-colors disabled:opacity-50">
-                        {isAttacking ? '격돌 중...' : '⚔️ 무기 격돌 시작'}
-                      </button>
-                    ) : <button onClick={generateArenaOpponent} className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-xl transition-colors">상대 탐색</button>}
+                    <button onClick={() => { if(soulStones >= cost && currentLevel < config.max) { setSoulStones(s => s - cost); setRelics(r => ({ ...r, [id]: currentLevel + 1 })); } }} disabled={soulStones < cost || currentLevel >= config.max} className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-blue-300 rounded-lg text-[10px] font-bold disabled:opacity-30">{currentLevel >= config.max ? 'MAX' : `${cost}석`}</button>
                   </div>
-                )}
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3.5 Feedback Board Modal */}
+      {activeModal === 'feedback' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <div className="flex items-center gap-3 mb-4"><MessageSquare className="w-7 h-7 text-emerald-400" /><h2 className="text-2xl font-black">Feedback</h2></div>
+
+            {isOfflineMode ? (
+              <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-500 p-4 rounded-xl text-sm text-center mb-4">
+                <ZapOff className="w-6 h-6 mx-auto mb-2 opacity-80" />
+                현재 오프라인 모드입니다. (Firebase/Rules 설정 확인)
               </div>
-            )}
-
-            {/* Traits & Allocator Modal Content */}
-            {activeModal === 'traits' && (
-              <div>
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-white text-lg font-bold flex items-center gap-2"><User className="w-5 h-5" /> 스탯 & 특성</h3>
-                  <div className="bg-purple-900/50 px-3 py-1 rounded-full border border-purple-500/50 flex items-center gap-2">
-                    <span className="text-xs text-purple-300 font-bold">보유 TP</span>
-                    <span className="font-mono text-white">{playerData.traitPoints}</span>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2 pb-2">
-                  <div className="bg-gray-950 p-3 rounded-xl border border-gray-800">
-                    <h4 className="text-xs font-bold text-gray-400 mb-3 flex items-center gap-1"><TrendingUp className="w-3 h-3" /> 스탯 분배 (Max Lv.50)</h4>
-                    <div className="flex flex-col gap-2">
-                      {Object.values(CUSTOM_STATS_CONFIG).map((stat) => (
-                        <div key={stat.id} className="flex items-center justify-between p-2 rounded-lg bg-gray-900 border border-gray-800/50">
-                          <div className="flex items-center gap-2">
-                            <stat.icon className="w-4 h-4 text-purple-400" />
-                            <div>
-                              <div className="text-sm font-bold text-gray-200">{stat.name} <span className="text-xs font-mono text-purple-400 ml-1">Lv.{allocatedStats[stat.id]}/{stat.maxLevel}</span></div>
-                              <div className="text-[10px] text-gray-500">{stat.desc}</div>
-                            </div>
-                          </div>
-                          <button onClick={() => handleAllocateStat(stat.id)} disabled={playerData.traitPoints <= 0 || allocatedStats[stat.id] >= stat.maxLevel} className="p-1.5 bg-purple-900/50 hover:bg-purple-800 text-purple-300 rounded-md transition-colors disabled:opacity-30 disabled:hover:bg-purple-900/50">
-                            <PlusCircle className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-gray-950 p-3 rounded-xl border border-gray-800">
-                    <h4 className="text-xs font-bold text-gray-400 mb-3">히든 특성 (스탯 조건 해금)</h4>
-                    <div className="flex flex-col gap-2">
-                      {dynamicTraits.length === 0 ? <p className="text-xs text-gray-500">해금된 히든 특성이 없습니다.</p> : dynamicTraits.map((t, idx) => (
-                        <div key={idx} className="flex flex-col gap-0.5">
-                          <div className="flex items-center gap-1.5"><Zap className={`w-3 h-3 ${t.color}`} /><span className={`text-sm font-bold ${t.color}`}>{t.name}</span></div>
-                          <span className="text-xs text-gray-500 pl-4">{t.desc}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  
-                  <div className="bg-gray-950 p-3 rounded-xl border border-gray-800">
-                    <h4 className="text-xs font-bold text-gray-400 mb-3">기본 성향</h4>
-                    <div className="flex flex-col gap-2">
-                      {traits.length === 0 ? <p className="text-xs text-gray-500">보유한 성향이 없습니다.</p> : traits.map((t, idx) => (
-                        <div key={idx} className="flex flex-col gap-0.5">
-                          <div className="flex items-center gap-1.5"><Shield className={`w-3 h-3 ${t.color}`} /><span className={`text-sm font-bold ${t.color}`}>{t.name}</span></div>
-                          <span className="text-xs text-gray-500 pl-4">{t.desc}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Stats & Records Modal Content */}
-            {activeModal === 'stats' && (
-              <div>
-                <h3 className="text-white text-lg font-bold mb-4 flex items-center gap-2"><BarChart3 className="w-5 h-5" /> 누적 통계</h3>
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center text-sm border-b border-gray-800 pb-2"><span className="text-gray-400">환생 횟수</span><span className="font-mono text-blue-400 font-bold">{stats.rebirthCount} 번</span></div>
-                  <div className="flex justify-between items-center text-sm border-b border-gray-800 pb-2"><span className="text-gray-400">처치한 보스</span><span className="font-mono text-white">{stats.bossesDefeated} 마리</span></div>
-                  <div className="flex justify-between items-center text-sm border-b border-gray-800 pb-2"><span className="text-gray-400">누적 골드 획득</span><span className="font-mono text-yellow-400">{stats.totalGoldEarned.toLocaleString()}G</span></div>
-                  <div className="flex justify-between items-center text-sm border-b border-gray-800 pb-2"><span className="text-gray-400">투기장 승리</span><span className="font-mono text-red-400">{stats.arenaWins} 회</span></div>
-                  <div className="flex justify-between items-center text-sm border-b border-gray-800 pb-2"><span className="text-gray-400">주점 방문 횟수</span><span className="font-mono text-emerald-400">{stats.tavernVisits} 회</span></div>
-                  <div className="flex justify-between items-center text-sm"><span className="text-gray-400">총 행동 횟수</span><span className="font-mono text-gray-300">{stats.totalClicks.toLocaleString()} 번</span></div>
-                </div>
-              </div>
-            )}
-
-            {/* Achievements Modal Content (2 Grid Layout) */}
-            {activeModal === 'achievements' && (
-              <div className="w-full">
-                <h3 className="text-white text-lg font-bold mb-4 flex items-center gap-2"><Trophy className="w-5 h-5 text-yellow-500" /> 다단계 업적</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2 pb-2">
-                  {ACHIEVEMENTS_CONFIG.map((ach) => {
-                    const currentTier = achievementLevels[ach.id] || 0;
-                    const maxTier = ach.thresholds.length;
-                    const isUnlocked = currentTier > 0;
-                    return (
-                      <div key={ach.id} className={`p-3 rounded-xl border flex flex-col gap-2 transition-colors ${isUnlocked ? 'bg-gray-800/80 border-gray-600' : 'bg-gray-950/50 border-gray-800/50 opacity-60'}`}>
-                        <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded-md flex-shrink-0 ${isUnlocked ? 'bg-yellow-500/20 text-yellow-500' : 'bg-gray-900 text-gray-600'}`}><ach.icon className="w-4 h-4" /></div>
-                          <span className={`text-sm font-bold flex-1 truncate ${isUnlocked ? 'text-gray-200' : 'text-gray-500'}`}>
-                            {ach.name} <span className="text-[10px] ml-1 text-gray-400">Lv.{currentTier}/{maxTier}</span>
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[11px] text-gray-400 block mb-1">{currentTier < maxTier ? `다음 목표: ${ach.getDesc(ach.thresholds[currentTier])}` : '최종 단계 도달!'}</span>
-                          <span className={`text-[10px] font-bold ${isUnlocked ? 'text-purple-400' : 'text-gray-600'}`}>현재 버프: {ach.descPrefix} {(ach.baseValue + ach.valuePerTier * Math.max(0, currentTier - 1)).toFixed(2)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Tavern (Bard) Modal Content */}
-            {activeModal === 'tavern' && (
-              <div>
-                <h3 className="text-white text-lg font-bold mb-4 flex items-center gap-2 text-emerald-400"><Music className="w-5 h-5" /> 뒷골목 주점</h3>
-                <div className="flex flex-col gap-4">
-                  <div className="bg-emerald-950/20 rounded-xl p-4 border border-emerald-900/30 text-center relative min-h-[120px] flex flex-col items-center justify-center">
-                    {isBardSinging ? (
-                      <div className="flex flex-col items-center gap-2">
-                        <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
-                        <p className="text-sm text-emerald-300">음유시인이 류트 줄을 튕기며 영감을 떠올리고 있습니다...</p>
-                      </div>
-                    ) : bardTale ? (
-                      <div className="animate-in fade-in duration-500 text-left w-full">
-                        <h4 className="text-md font-bold text-emerald-300 mb-2 border-b border-emerald-900/50 pb-2">"{bardTale.title}"</h4>
-                        <p className="text-sm text-gray-300 leading-relaxed italic break-keep text-balance">"{bardTale.content}"</p>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-gray-400">"점점 소문 구하기가 어려워지는군. 골드만 충분히 낸다면, 영구적인 영감(Buff)을 줄 이야기를 하나 해주지."</p>
-                    )}
-                  </div>
-
-                  <button onClick={handleListenBard} disabled={isBardSinging} className="w-full py-3 bg-emerald-800 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                    <Coins className="w-4 h-4 text-yellow-400" /> {currentTavernCost.toLocaleString()}G 내고 이야기 듣기 ✨
+            ) : (
+              <>
+                <textarea
+                  value={feedbackDraft}
+                  onChange={(e) => setFeedbackDraft(e.target.value)}
+                  placeholder="버그/개선점/밸런스/감상 등 자유롭게 남겨주세요 (400자)"
+                  maxLength={400}
+                  className="w-full h-24 bg-black border border-zinc-700 rounded-2xl px-4 py-3 text-sm outline-none focus:border-emerald-500 resize-none"
+                />
+                <div className="flex justify-between items-center mt-2 mb-4">
+                  <span className="text-[10px] text-zinc-500">{String(feedbackDraft || '').length}/400</span>
+                  <button onClick={postFeedback} disabled={isPostingFeedback || !String(feedbackDraft || '').trim()} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-black text-sm disabled:opacity-40 flex items-center gap-2">
+                    {isPostingFeedback ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} 등록
                   </button>
-                  
-                  {(tavernBuffs.damage > 0 || tavernBuffs.gold > 0) && (
-                     <div className="mt-2 text-center text-xs text-gray-400">
-                       현재까지 획득한 주점 버프: 데미지 +{tavernBuffs.damage * 3}%, 골드 +{tavernBuffs.gold * 8}%
-                     </div>
+                </div>
+
+                <div className="text-[10px] font-black text-zinc-500 uppercase mb-2">Recent</div>
+                <div className="space-y-2 max-h-[45vh] overflow-y-auto pr-2 custom-scrollbar">
+                  {feedbackItems.length === 0 ? (
+                    <div className="text-center text-zinc-500 text-sm py-6">아직 글이 없습니다.</div>
+                  ) : (
+                    feedbackItems.map((it) => (
+                      <div key={it.id} className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-xs font-black text-zinc-300">{String(it.name || 'Anonymous')}</div>
+                          <div className="text-[10px] text-zinc-600 font-mono">{it.clientAt ? new Date(Number(it.clientAt)).toLocaleString() : ''}</div>
+                        </div>
+                        <div className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{String(it.text || '')}</div>
+                      </div>
+                    ))
                   )}
                 </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 4. PvP Rankings & Clash Modals */}
+      {activeModal === 'pvp' && (
+        <div className="fixed inset-0 bg-black/90 z-50 p-6 flex items-center justify-center animate-in fade-in" onClick={() => setActiveModal(null)}>
+          <div className="w-full max-w-sm bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setActiveModal(null)} className="absolute top-4 right-4 text-zinc-500"><X /></button>
+            <div className="flex items-center gap-3 mb-6"><Swords className="w-8 h-8 text-red-500" /><h2 className="text-2xl font-black">Arena (Global)</h2></div>
+
+            <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 mb-4">
+              <div className="flex items-center justify-between text-sm font-bold">
+                <span className="text-zinc-300">My AP</span>
+                <span className="text-red-300 font-mono">{Number(statistics.arenaPoints || 0).toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-zinc-500 mt-1">
+                <span>W/L</span>
+                <span className="font-mono">{Number(statistics.pvpWins || 0)} / {Number(statistics.pvpLosses || 0)}</span>
+              </div>
+              <button onClick={quickMatch} disabled={isAnimating} className="w-full mt-3 py-3 bg-red-950/60 hover:bg-red-900 rounded-xl font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50">
+                {isAnimating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" />} Quick Match
+              </button>
+            </div>
+            
+            {isOfflineMode ? (
+              <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-500 p-4 rounded-xl text-sm text-center mb-4">
+                <ZapOff className="w-6 h-6 mx-auto mb-2 opacity-80" />
+                현재 오프라인 모드로 실행 중입니다. <br/>투기장 기능을 사용하려면 Firebase 설정을 적용해주세요.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
+                {rankings.length === 0 ? <p className="text-center text-zinc-500 text-sm py-4">서버에서 랭킹을 불러오는 중...</p> : rankings.map((rk, idx) => (
+                  <div key={rk.uid} className={`flex items-center gap-4 p-3 rounded-xl border ${rk.uid === user?.uid ? 'bg-blue-900/20 border-blue-500/50' : 'bg-zinc-950 border-zinc-800'}`}>
+                    <span className={`text-lg font-black w-6 text-center ${idx < 3 ? 'text-yellow-500' : 'text-zinc-600'}`}>{idx + 1}</span>
+                    <div className="flex-1">
+                      <div className="text-sm font-bold flex items-center gap-2">{String(rk.name)} <span className="text-[10px] text-zinc-500">Lv.{rk.level}</span></div>
+                      <div className="text-[10px] text-zinc-400 font-mono">Weapon: +{rk.weaponLevel}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] font-black text-red-300">AP {(rk.arenaPoints || 0).toLocaleString()}</div>
+                      <div className="text-[10px] font-mono text-zinc-500">CP {(rk.combatPower || 0).toLocaleString()}</div>
+                      <button onClick={() => { setPvpOpponent(rk); setPvpResult(null); setActiveModal('pvp_clash'); }} disabled={rk.uid === user?.uid} className="text-[10px] bg-red-950/50 text-red-400 border border-red-900/50 px-3 py-1 rounded-lg mt-1 font-bold hover:bg-red-900 disabled:opacity-0">Duel</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={syncProfile} disabled={isSyncing || isOfflineMode} className="w-full mt-4 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-50 text-sm transition-all">
+              {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cloud className="w-4 h-4" />} 현재 전투력 동기화
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeModal === 'pvp_clash' && (
+        <div className="fixed inset-0 bg-black/95 z-[60] p-6 flex flex-col items-center justify-center animate-in zoom-in">
+          <div className="w-full max-w-sm text-center">
+            <h2 className="text-4xl font-black mb-12 italic tracking-tighter text-red-600 animate-pulse">VERSUS</h2>
+            <div className="grid grid-cols-2 gap-8 mb-12 relative">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-px h-24 bg-zinc-800" />
+              <div className="flex flex-col items-center">
+                <div className="w-20 h-20 bg-zinc-900 rounded-full border border-blue-500 flex items-center justify-center mb-4"><User className="w-10 h-10 text-blue-400" /></div>
+                <span className="text-xs font-bold text-zinc-500 mb-1">YOU</span>
+                <span className="text-lg font-black">{playerName}</span><span className="text-xl font-mono text-blue-400">{myCombatPower.toLocaleString()}</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <div className="w-20 h-20 bg-zinc-900 rounded-full border border-red-500 flex items-center justify-center mb-4"><Skull className="w-10 h-10 text-red-500" /></div>
+                <span className="text-xs font-bold text-zinc-500 mb-1">OPPONENT</span>
+                <span className="text-lg font-black">{pvpOpponent?.name}</span><span className="text-xl font-mono text-red-400">{(pvpOpponent?.combatPower || 0).toLocaleString()}</span>
+              </div>
+            </div>
+            {pvpResult ? (
+              <div className="animate-in fade-in slide-in-from-bottom-4">
+                <div className={`text-4xl font-black mb-4 ${pvpResult.isWin ? 'text-yellow-400' : 'text-zinc-600'}`}>{pvpResult.isWin ? 'VICTORY' : 'DEFEAT'}</div>
+                <div className="flex justify-center gap-8 mb-8 text-sm font-mono text-zinc-500"><div>ROLL: {pvpResult.myRoll}</div><div>ROLL: {pvpResult.oppRoll}</div></div>
+                <div className="text-sm font-black mb-8 text-zinc-300">
+                  {pvpResult.pointDelta >= 0 ? `+${pvpResult.pointDelta}` : `${pvpResult.pointDelta}`} AP
+                  {pvpResult.rewardGold > 0 ? ` / +${pvpResult.rewardGold}G` : ''}
+                </div>
+                <button onClick={() => { setActiveModal('pvp'); setPvpOpponent(null); }} className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 rounded-2xl font-black">투기장 복귀</button>
+              </div>
+            ) : (
+              <button onClick={executePvp} disabled={isAnimating} className="w-full py-6 bg-red-600 hover:bg-red-500 rounded-2xl font-black text-xl flex items-center justify-center gap-3 disabled:opacity-50">
+                {isAnimating ? <Loader2 className="w-6 h-6 animate-spin" /> : <Swords className="w-6 h-6" />} FIGHT
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isScreenSaver && (
+        <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center" onMouseDown={wakeScreenSaver} onTouchStart={wakeScreenSaver}>
+          <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.25),rgba(0,0,0,0)_60%)]" />
+          <div className="relative w-full max-w-sm text-center p-8">
+            <div className="text-xs font-black text-zinc-600 uppercase tracking-widest mb-4">Screen Saver</div>
+            <div className="text-5xl font-black text-zinc-200 mb-2 font-mono">{new Date().toLocaleTimeString([], { hour12: false })}</div>
+            <div className="text-xs text-zinc-600 mb-8">{new Date().toLocaleDateString()}</div>
+            {!screenSaverLocked && <div className="text-xs font-bold text-zinc-500">클릭/터치로 복귀</div>}
+
+            {screenSaverLocked && (
+              <div className="mt-6 bg-zinc-900 border border-zinc-800 rounded-3xl p-6 text-left" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2 mb-2"><Shield className="w-5 h-5 text-blue-500" /><div className="font-black">PIN 잠금</div></div>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  placeholder="PIN (4~12자리 숫자)"
+                  value={unlockPrompt.pin}
+                  onChange={(e) => setUnlockPrompt(p => ({ ...p, pin: e.target.value, error: '' }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') confirmUnlock(); }}
+                  className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-3 text-center text-lg font-black tracking-widest focus:border-blue-500 outline-none"
+                />
+                {unlockPrompt.error && <div className="mt-3 text-xs text-red-400 font-bold">{unlockPrompt.error}</div>}
+                <button onClick={confirmUnlock} disabled={unlockPrompt.busy} className="w-full mt-4 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-black disabled:opacity-50 flex items-center justify-center gap-2">
+                  {unlockPrompt.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} 해제
+                </button>
               </div>
             )}
           </div>
