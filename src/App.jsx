@@ -276,9 +276,11 @@ export default function App() {
   // --- Trackers & Progression ---
   const [statistics, setStatistics] = useState(DEFAULT_STATS);
   const [achievementLevels, setAchievementLevels] = useState({});
-  const [stage, setStage] = useState(0);
-  const [bossHp, setBossHp] = useState(0);
-  const suppressBossHpResetRef = useRef(null); // stage number to suppress once
+	  const [stage, setStage] = useState(0);
+	  const [bossHp, setBossHp] = useState(0);
+	  const suppressBossHpResetRef = useRef(null); // stage number to suppress once
+	  const bossRespawnTimeoutRef = useRef(null);
+	  const bossRespawnScheduledStageRef = useRef(null);
 
   // --- UI State ---
   const [logs, setLogs] = useState([]);
@@ -823,9 +825,38 @@ export default function App() {
     return unsub;
   }, [user, isOfflineMode, addLog]);
 
-  // ==========================================
-  // [Logic] Progression & Achievements
-  // ==========================================
+	  // ==========================================
+	  // [Logic] Progression & Achievements
+	  // ==========================================
+	  useEffect(() => {
+	    if (appState !== 'playing') return;
+
+	    if (bossHp > 0) {
+	      bossRespawnScheduledStageRef.current = null;
+	      if (bossRespawnTimeoutRef.current) {
+	        clearTimeout(bossRespawnTimeoutRef.current);
+	        bossRespawnTimeoutRef.current = null;
+	      }
+	      return;
+	    }
+
+	    if (bossRespawnScheduledStageRef.current === stage) return;
+	    bossRespawnScheduledStageRef.current = stage;
+
+	    if (bossRespawnTimeoutRef.current) clearTimeout(bossRespawnTimeoutRef.current);
+	    bossRespawnTimeoutRef.current = setTimeout(() => {
+	      bossRespawnTimeoutRef.current = null;
+	      setStage((s) => s + 1);
+	    }, 1000);
+
+	    return () => {
+	      if (bossRespawnTimeoutRef.current) {
+	        clearTimeout(bossRespawnTimeoutRef.current);
+	        bossRespawnTimeoutRef.current = null;
+	      }
+	    };
+	  }, [bossHp, stage, appState]);
+
 	  useEffect(() => {
 	    setBossHp((prev) => {
 	      if (suppressBossHpResetRef.current === stage) {
@@ -995,8 +1026,8 @@ export default function App() {
       setStatistics(s => ({ ...s, bossesDefeated: s.bossesDefeated + 1, totalGoldEarned: s.totalGoldEarned + boss.rewardGold }));
       gainExp(boss.rewardGold / 10);
       addLog(`[토벌] ${boss.name} 처치! 골드 ${boss.rewardGold.toLocaleString()} 획득.`, 'success');
-      setTimeout(() => setStage(s => s + 1), 1000);
-    }
+	      // stage advance handled by the boss respawn effect (also works across refreshes)
+	    }
     setTimeout(() => setIsAnimating(false), 150);
   };
 
