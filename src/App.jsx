@@ -278,7 +278,7 @@ export default function App() {
   const [achievementLevels, setAchievementLevels] = useState({});
   const [stage, setStage] = useState(0);
   const [bossHp, setBossHp] = useState(0);
-  const suppressBossHpResetRef = useRef(false);
+  const suppressBossHpResetRef = useRef(null); // stage number to suppress once
 
   // --- UI State ---
   const [logs, setLogs] = useState([]);
@@ -358,7 +358,7 @@ export default function App() {
     setLogs(prev => [...prev.slice(-29), { id: Date.now() + Math.random(), text, type }]);
   }, []);
 
-  const resetGameForNewProfile = () => {
+	  const resetGameForNewProfile = () => {
     setGold(1000);
     setStones(5);
     setSoulStones(0);
@@ -372,9 +372,11 @@ export default function App() {
     setStatistics(DEFAULT_STATS);
     setAchievementLevels({});
 
-    suppressBossHpResetRef.current = true;
-    setStage(0);
-    setBossHp(getBossConfig(0).maxHp);
+	    // Keep current HP when setting stage to the same value (0).
+	    // Suppress only for the stage we are setting once, then clear on the next stage effect run.
+	    suppressBossHpResetRef.current = 0;
+	    setStage(0);
+	    setBossHp(getBossConfig(0).maxHp);
 
     setLogs([]);
     setActiveModal(null);
@@ -385,7 +387,7 @@ export default function App() {
     setPvpResult(null);
   };
 
-  const loadGameFromSave = (data) => {
+	  const loadGameFromSave = (data) => {
     const now = Date.now();
     const lastSavedAt = Number(data.lastSavedAt || data.savedAt || 0);
     const rawElapsedMs = lastSavedAt > 0 ? now - lastSavedAt : 0;
@@ -452,10 +454,11 @@ export default function App() {
     setAchievementLevels(data.achievementLevels || {});
     setPvpHistory(Array.isArray(data.pvpHistory) ? data.pvpHistory : []);
 
-    suppressBossHpResetRef.current = true;
-    setStage(nextStage);
-    setBossHp(nextBossHp);
-  };
+	    // Prevent the stage-change effect from overwriting bossHp restored from the save.
+	    suppressBossHpResetRef.current = nextStage;
+	    setStage(nextStage);
+	    setBossHp(nextBossHp);
+	  };
 
   const handleLogin = (name) => {
     const trimmed = name.trim();
@@ -823,15 +826,17 @@ export default function App() {
   // ==========================================
   // [Logic] Progression & Achievements
   // ==========================================
-  useEffect(() => {
-    setBossHp((prev) => {
-      if (suppressBossHpResetRef.current) {
-        suppressBossHpResetRef.current = false;
-        return prev;
-      }
-      return getBossConfig(stage).maxHp;
-    });
-  }, [stage]);
+	  useEffect(() => {
+	    setBossHp((prev) => {
+	      if (suppressBossHpResetRef.current === stage) {
+	        suppressBossHpResetRef.current = null;
+	        return prev;
+	      }
+
+	      suppressBossHpResetRef.current = null;
+	      return getBossConfig(stage).maxHp;
+	    });
+	  }, [stage]);
 
   useEffect(() => {
     if (appState !== 'playing') return;
