@@ -16,7 +16,8 @@ import { collection, doc, setDoc, getDoc, addDoc, query, orderBy, limit, serverT
 import { 
   getSaveKey, getPinKey, isValidPin, getStoredPinRecord, 
   readUiSettings, clampNumber, getReqExp, getRelicCost, applyExpOffline, 
-  getBossConfig, generateLocalAppraisal, getActiveBuffs
+  getBossConfig, generateLocalAppraisal, getActiveBuffs,
+  peekLastSessionSave, persistLastSession
 } from '../utils/gameUtils';
 import { hashPin, verifyPin } from '../utils/cryptoUtils';
 
@@ -31,8 +32,9 @@ export function useGameLogic() {
     lastPvpAt: 0
   };
 
-  // --- App State ---
-  const [appState, setAppState] = useState('login'); // 'login', 'intro', 'playing'
+  const [appState, setAppState] = useState(() =>
+    typeof window !== 'undefined' && peekLastSessionSave() ? 'bootstrapping' : 'login'
+  );
   const [playerName, setPlayerName] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -297,6 +299,43 @@ export function useGameLogic() {
 	    setStage(nextStage);
 	    setBossHp(nextBossHp);
 	  };
+
+  useEffect(() => {
+    if (appState !== 'bootstrapping') return;
+    const peek = peekLastSessionSave();
+    if (!peek) {
+      persistLastSession(null);
+      setAppState('login');
+      return;
+    }
+    try {
+      setPlayerName(peek.name);
+      loadGameFromSave(JSON.parse(peek.raw));
+      setAppState('playing');
+      addLog(`[자동 복구] ${peek.name}님, 환영합니다!`, 'success');
+    } catch (e) {
+      console.error('Session restore failed:', e);
+      persistLastSession(null);
+      setAppState('login');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appState]);
+
+  useEffect(() => {
+    if (appState === 'playing' && playerName) persistLastSession(playerName);
+  }, [appState, playerName]);
+
+  const logout = () => {
+    persistLastSession(null);
+    setPendingLogin(null);
+    setPinPrompt({ open: false, pin: '', error: '', busy: false });
+    setPlayerName('');
+    resetGameForNewProfile();
+    setQuestionIndex(0);
+    setIntroVotes([]);
+    setTraits([]);
+    setAppState('login');
+  };
 
   const handleLogin = async (name) => {
     const trimmed = name.trim();
@@ -1199,6 +1238,7 @@ export function useGameLogic() {
     confirmPinLogin: () => confirmPinLogin(),
     closePinPrompt: () => closePinPrompt(),
     resetProfileWithoutPin: () => resetProfileWithoutPin(),
+    logout: () => logout(),
 
     // Game Actions
     handleAttack: () => handleAttack(),

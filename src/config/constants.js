@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 
 export const SAVE_PREFIX = 'JINY_SAVE_V4_';
+export const LAST_SESSION_KEY = 'JINY_LAST_PROFILE_V1';
 export const PIN_KEY_SUFFIX = '__PIN_V1';
 export const UI_SETTINGS_KEY = 'JINY_UI_V1';
 export const PBKDF2_ITERATIONS = 120_000;

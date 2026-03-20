@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, MessageSquare, Trophy, Swords, User, Coins, Gem, Infinity as InfinityIcon, ZapOff, BookOpen } from 'lucide-react';
+import { Settings, MessageSquare, Trophy, Swords, User, Coins, Gem, Infinity as InfinityIcon, ZapOff, BookOpen, LogOut } from 'lucide-react';
 import { DAILY_QUESTS } from '../../config/constants';
 
 export function Header({ session, game, pvp, ui, actions }) {
@@ -47,6 +47,9 @@ export function Header({ session, game, pvp, ui, actions }) {
           <button onClick={() => actions.setActiveModal('stats')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-blue-400 relative">
             <User className="w-5 h-5" />
             {playerData.traitPoints > 0 && <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse" />}
+          </button>
+          <button type="button" onClick={() => actions.logout()} title="로그아웃" className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-orange-400">
+            <LogOut className="w-5 h-5" />
           </button>
         </div>
       </div>
