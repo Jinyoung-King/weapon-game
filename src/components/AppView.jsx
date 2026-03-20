@@ -1,5 +1,6 @@
 /* eslint-disable no-unused-vars */
 import React from 'react';
+import { Loader2 } from 'lucide-react';
 import { LoginView } from './game/LoginView';
 import { IntroView } from './game/IntroView';
 import { TraitResultView } from './game/TraitResultView';
@@ -12,6 +13,14 @@ import { ScreenSaver } from './game/ScreenSaver';
 
 export function AppView({ state, actions }) {
   const { session, game, combat, pvp, ui } = state;
+
+  if (session.appState === 'bootstrapping') {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-400 flex items-center justify-center font-sans">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-500" aria-label="불러오는 중" />
+      </div>
+    );
+  }
 
   if (session.appState === 'login') {
     return <LoginView session={session} pvp={pvp} actions={actions} />;
