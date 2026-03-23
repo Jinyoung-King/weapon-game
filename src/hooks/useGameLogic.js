@@ -58,7 +58,6 @@ export function useGameLogic() {
   const [viewedAchievementLevels, setViewedAchievementLevels] = useState({});
   const [stage, setStage] = useState(0);
   const [bossHp, setBossHp] = useState(0);
-  const suppressBossHpResetRef = useRef(null);
   const bossRespawnTimeoutRef = useRef(null);
   const bossRespawnScheduledStageRef = useRef(null);
 
@@ -204,9 +203,6 @@ export function useGameLogic() {
     setAchievementLevels({});
     setViewedAchievementLevels({});
 
-	    // Keep current HP when setting stage to the same value (0).
-	    // Suppress only for the stage we are setting once, then clear on the next stage effect run.
-	    suppressBossHpResetRef.current = 0;
 	    setStage(0);
 	    setBossHp(getBossConfig(0).maxHp);
 
@@ -294,8 +290,6 @@ export function useGameLogic() {
     setViewedAchievementLevels(data.viewedAchievementLevels || data.achievementLevels || {});
     setPvpHistory(Array.isArray(data.pvpHistory) ? data.pvpHistory : []);
 
-	    // Prevent the stage-change effect from overwriting bossHp restored from the save.
-	    suppressBossHpResetRef.current = nextStage;
 	    setStage(nextStage);
 	    setBossHp(nextBossHp);
 	  };
@@ -768,7 +762,11 @@ export function useGameLogic() {
 	    if (bossRespawnTimeoutRef.current) clearTimeout(bossRespawnTimeoutRef.current);
 	    bossRespawnTimeoutRef.current = setTimeout(() => {
 	      bossRespawnTimeoutRef.current = null;
-	      setStage((s) => s + 1);
+	      setStage((s) => {
+	        const next = s + 1;
+	        setBossHp(getBossConfig(next).maxHp);
+	        return next;
+	      });
 	    }, 1000);
 
 	    return () => {
@@ -778,18 +776,6 @@ export function useGameLogic() {
 	      }
 	    };
 	  }, [bossHp, stage, appState]);
-
-	  useEffect(() => {
-	    setBossHp((prev) => {
-	      if (suppressBossHpResetRef.current === stage) {
-	        suppressBossHpResetRef.current = null;
-	        return prev;
-	      }
-
-	      suppressBossHpResetRef.current = null;
-	      return getBossConfig(stage).maxHp;
-	    });
-	  }, [stage]);
 
   useEffect(() => {
     if (appState !== 'playing') return;
@@ -1001,7 +987,7 @@ export function useGameLogic() {
     setSoulStones(s => s + earned);
     setEquipment({ weapon: 0, armor: 0, ring: 0 }); setAppraisals({ weapon: null, armor: null, ring: null });
     setPlayerData({ level: 1, exp: 0, traitPoints: 0 }); setAllocatedStats({ ATTACK: 0, SUCCESS: 0, CRIT: 0, WEALTH: 0 });
-    setGold(0); setStones(0); setStage(0); setFailStack(0);
+    setGold(0); setStones(0); setStage(0); setBossHp(getBossConfig(0).maxHp); setFailStack(0);
     setActiveModal(null);
     addLog(`✨ [환생] 영혼석 ${earned}개 획득! (스탯/장비/스테이지 초기화)`, 'success');
   };

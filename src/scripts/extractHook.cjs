@@ -29,7 +29,7 @@ const returnVars = [
   'playerData', 'setPlayerData', 'equipment', 'setEquipment', 'appraisals', 'setAppraisals',
   'allocatedStats', 'setAllocatedStats', 'traits', 'setTraits', 'relics', 'setRelics',
   'failStack', 'setFailStack', 'statistics', 'setStatistics', 'achievementLevels', 'setAchievementLevels',
-  'stage', 'setStage', 'bossHp', 'setBossHp', 'suppressBossHpResetRef', 'bossRespawnTimeoutRef', 'bossRespawnScheduledStageRef',
+  'stage', 'setStage', 'bossHp', 'setBossHp', 'bossRespawnTimeoutRef', 'bossRespawnScheduledStageRef',
   'logs', 'setLogs', 'activeModal', 'setActiveModal', 'selectedEquip', 'setSelectedEquip',
   'isAnimating', 'setIsAnimating', 'isAttacking', 'setIsAttacking', 'damageTexts', 'setDamageTexts',
   'user', 'setUser', 'rankings', 'setRankings', 'isSyncing', 'setIsSyncing',
