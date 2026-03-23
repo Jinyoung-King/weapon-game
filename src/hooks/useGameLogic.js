@@ -209,7 +209,14 @@ export function useGameLogic() {
   };
 
   const bundle = {
-    state: { game: economy.state, combat: { ...combat.state, myCombatPower, activeBuffs }, social: social.state, auth: auth.state, ui: ui.state, pvp: social.state },
+    state: { 
+      game: { ...economy.state, statistics: ui.state.statistics, achievementLevels: ui.state.achievementLevels }, 
+      combat: { ...combat.state, myCombatPower, activeBuffs }, 
+      social: social.state, 
+      auth: auth.state, 
+      ui: ui.state, 
+      pvp: social.state 
+    },
     setters: { 
       game: { ...economy.setters, setStatistics: ui.setters.setStatistics }, 
       combat: combat.setters, 
