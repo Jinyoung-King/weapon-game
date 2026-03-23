@@ -205,6 +205,7 @@ export function useGameLogic() {
     setAppState: ui.setters.setAppState,
     setPlayerName: ui.setters.setPlayerName,
     setIsAnimating: ui.setters.setIsAnimating,
+    setActiveModal: ui.setters.setActiveModal,
     updateQuestProgress: (t, a) => social.setters.setDailyQuests(prev => prev.map(q => q.id === t ? { ...q, current: (q.current || 0) + a } : q))
   };
 
@@ -352,6 +353,13 @@ export function useGameLogic() {
       ui.setters.setAchievementLevels(nextLevels);
     }
   }, [ui.state.statistics, economy.state.playerData.level, economy.state.equipment, ui.state.appState]);
+
+  // 자동 카드 선택 모달 팝업
+  useEffect(() => {
+    if (combat.state.pendingCards && combat.state.pendingCards.length > 0 && ui.state.activeModal !== 'card_selection') {
+      ui.setters.setActiveModal('card_selection');
+    }
+  }, [combat.state.pendingCards, ui.state.activeModal, ui.setters.setActiveModal]);
 
   // Unified actions object
   // UI 컴포넌트들(ModalManager, ActionButtons 등)에서 기대하는 함수 이름으로 명시적 매핑을 수행합니다.

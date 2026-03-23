@@ -97,12 +97,15 @@ export function useCombatHandlers({ state, setters, utils }) {
 
   const handleChooseRunBuff = (buff) => {
     setRunBuffs(prev => [...prev, buff]);
-    setStage(s => s + 1);
-    const nextBoss = getBossConfig(combat.stage + 1);
+    const nextStage = combat.stage + 1;
+    setStage(nextStage);
+    const nextBoss = getBossConfig(nextStage);
     setBossHp(nextBoss.maxHp);
     setPendingCards(null);
+    utils.setActiveModal(null); // Close the selection modal
     addLog(`[스테이지 성과] ${buff.name} 획득! 다음 층으로 이동.`, 'success');
   };
 
   return { handleAttack, handleBossDefeat, handleUseSkill, handleChooseRunBuff, gainExp };
 }
+
