@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Shield, PlusCircle, Trophy, Swords, User, BrainCircuit, ZapOff, Loader2, CheckCircle2, Save, Trash2, Cloud, Sparkles, Coins, Gem, TrendingUp, Infinity as InfinityIcon, Skull, MessageSquare, ShieldAlert, AlertTriangle, History, BookOpen } from 'lucide-react';
-import { ACHIEVEMENTS_CONFIG, RELICS_CONFIG, CUSTOM_STATS_CONFIG, DEFAULT_UI_SETTINGS, IDLE_REWARD_MAX_MS, DAILY_QUESTS } from '../../config/constants';
+import { X, Shield, PlusCircle, Trophy, Swords, User, BrainCircuit, ZapOff, Loader2, CheckCircle2, Save, Trash2, Cloud, Sparkles, Coins, Gem, TrendingUp, Infinity as InfinityIcon, Skull, MessageSquare, ShieldAlert, AlertTriangle, History, BookOpen, LayoutGrid, ChevronRight, Settings, LogOut, Activity } from 'lucide-react';
+import { ACHIEVEMENTS_CONFIG, RELICS_CONFIG, CUSTOM_STATS_CONFIG, DEFAULT_UI_SETTINGS, IDLE_REWARD_MAX_MS, DAILY_QUESTS, DAILY_QUEST_ALL_DONE_REWARD } from '../../config/constants';
 
 const ModalWrapper = ({ children, title, icon: Icon, colorClass = "text-blue-500", onClose }) => (
   <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
@@ -129,27 +129,99 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
                 <button onClick={actions.removePin} disabled={session.pinSettings.busy} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-black text-red-300 disabled:opacity-50 flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> PIN 해제</button>
               </div>
             )}
+            <div className="mt-6 pt-4 border-t border-zinc-800">
+              <button 
+                onClick={() => {
+                  actions.setActiveModal(null);
+                  actions.handleLogout();
+                }}
+                className="w-full py-4 bg-red-900/20 hover:bg-red-900/40 text-red-500 rounded-2xl font-black flex items-center justify-center gap-2 border border-red-500/20 transition-all"
+              >
+                <LogOut className="w-5 h-5" /> 로그아웃
+              </button>
+            </div>
           </ModalWrapper>
         );
 
       case 'achievements':
         return (
-          <ModalWrapper title="업적 현황" icon={Trophy} colorClass="text-yellow-500" onClose={() => actions.setActiveModal(null)}>
-            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+          <ModalWrapper title="모험 도감 (업적)" icon={Trophy} colorClass="text-yellow-500" onClose={() => actions.setActiveModal(null)}>
+            <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5 mb-6">
+               <div className="flex items-center gap-2 mb-4">
+                  <Activity className="w-4 h-4 text-zinc-500" />
+                  <h4 className="text-[10px] font-black uppercase text-zinc-500 tracking-widest">나의 모험 기록</h4>
+               </div>
+               <div className="grid grid-cols-2 gap-y-4 gap-x-6">
+                  {[
+                    { label: '보스 처치', val: game.statistics.bossesDefeated, unit: '마리' },
+                    { label: '누적 골드', val: game.statistics.totalGoldEarned.toLocaleString(), unit: 'G' },
+                    { label: '아레나 점수', val: game.statistics.arenaPoints.toLocaleString(), unit: 'AP' },
+                    { label: '장비 총합', val: Object.values(game.equipment).reduce((a,b)=>a+b,0), unit: '강' }
+                  ].map(s => (
+                    <div key={s.label}>
+                       <div className="text-[9px] font-bold text-zinc-600 mb-1 uppercase">{s.label}</div>
+                       <div className="text-sm font-black text-zinc-200 font-mono">{s.val} <span className="text-[10px] font-bold text-zinc-600 ml-0.5">{s.unit}</span></div>
+                    </div>
+                  ))}
+               </div>
+            </div>
+
+            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar pb-6">
               {ACHIEVEMENTS_CONFIG.map(ach => {
                 const tier = game.achievementLevels[ach.id] || 0;
                 const isMax = tier >= ach.thresholds.length;
                 const AchIcon = ach.icon;
+                
+                let currentVal = 0;
+                switch (ach.id) {
+                    case 'boss_slayer': currentVal = game.statistics.bossesDefeated; break;
+                    case 'rich': currentVal = game.statistics.totalGoldEarned; break;
+                    case 'clicker': currentVal = game.statistics.totalClicks; break;
+                    case 'level_up': currentVal = game.playerData.level; break;
+                    case 'enhancer': currentVal = Object.values(game.equipment).reduce((a, b) => a + b, 0); break;
+                    case 'pvp_master': currentVal = game.statistics.arenaPoints; break;
+                    case 'arena_slayer': currentVal = game.statistics.pvpWins; break;
+                    default: break;
+                }
+                
+                const nextGoal = isMax ? ach.thresholds[ach.thresholds.length-1] : ach.thresholds[tier];
+                const prevGoal = tier === 0 ? 0 : ach.thresholds[tier-1];
+                const progressPercent = isMax ? 100 : Math.min(100, ((currentVal - prevGoal) / (nextGoal - prevGoal)) * 100);
+
                 return (
-                  <div key={ach.id} className={`p-4 rounded-2xl border ${tier > 0 ? 'bg-zinc-800/80 border-zinc-600' : 'bg-zinc-950 border-zinc-800/50 opacity-60'}`}>
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className={`p-2 rounded-lg ${tier > 0 ? 'bg-yellow-500/20 text-yellow-500' : 'bg-zinc-900 text-zinc-600'}`}><AchIcon className="w-4 h-4" /></div>
-                      <div>
-                        <div className="text-sm font-bold text-gray-200">{ach.name} <span className="text-[10px] text-zinc-500">Lv.{tier}/{ach.thresholds.length}</span></div>
-                        <div className="text-[10px] text-zinc-400">{isMax ? '최종 도달!' : `다음: ${ach.getDesc(ach.thresholds[tier])}`}</div>
+                  <div key={ach.id} className={`p-4 rounded-3xl border transition-all ${tier > 0 ? 'bg-zinc-900 border-zinc-800' : 'bg-zinc-950 border-zinc-900 opacity-40'}`}>
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className={`p-3 rounded-2xl relative ${tier > 0 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-white shadow-lg shadow-yellow-900/40' : 'bg-zinc-800 text-zinc-600'}`}>
+                        <AchIcon className="w-5 h-5" />
+                        {tier > 0 && <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 text-yellow-950 text-[9px] font-black flex items-center justify-center rounded-full border border-zinc-900">{tier}</div>}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex justify-between items-center mb-1">
+                           <h3 className="text-sm font-black text-white">{ach.name}</h3>
+                           <span className="text-[10px] font-black text-zinc-500">Lv.{tier} / {ach.thresholds.length}</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 font-bold leading-tight">
+                            {isMax ? '모든 목표를 달성했습니다!' : ach.getDesc(nextGoal)}
+                        </p>
                       </div>
                     </div>
-                    <div className={`text-[10px] font-bold px-2 py-1 rounded bg-black/50 ${tier > 0 ? 'text-purple-400' : 'text-zinc-600'}`}>버프: {ach.descPrefix} {(ach.baseValue + ach.valuePerTier * Math.max(0, tier - 1)).toFixed(2)}</div>
+                    
+                    {!isMax && (
+                       <div className="space-y-1.5 mb-4">
+                          <div className="flex justify-between text-[9px] font-bold">
+                             <span className="text-zinc-600">진행률</span>
+                             <span className="text-zinc-400 font-mono">{currentVal.toLocaleString()} / {nextGoal.toLocaleString()}</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-black rounded-full overflow-hidden">
+                             <div className="h-full bg-gradient-to-r from-yellow-600 to-amber-500 transition-all duration-1000" style={{ width: `${progressPercent}%` }} />
+                          </div>
+                       </div>
+                    )}
+
+                    <div className={`flex items-center gap-2 p-2.5 rounded-xl bg-black/40 border border-zinc-800/50 ${tier > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                       <TrendingUp className="w-3.5 h-3.5" />
+                       <span className="text-[10px] font-black uppercase tracking-tight">수집 효과: {ach.descPrefix} +{((ach.baseValue + ach.valuePerTier * Math.max(0, tier - 1) - 1)*100).toFixed(0)}%</span>
+                    </div>
                   </div>
                 );
               })}
@@ -228,6 +300,34 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
           </ModalWrapper>
         );
 
+      case 'card_selection':
+        return (
+          <ModalWrapper title="특별 성장 선택" icon={Sparkles} colorClass="text-yellow-400" onClose={() => {}}>
+            <p className="text-xs text-zinc-500 mb-6 font-bold uppercase tracking-widest text-center">보스 돌파 기념 희귀 정수를 선택하세요</p>
+            <div className="space-y-3">
+              {(combat.pendingCards || []).map((card, i) => (
+                <button
+                  key={i}
+                  onClick={() => actions.handleChooseRunBuff(card)}
+                  className={`w-full group relative p-4 bg-zinc-950 border border-zinc-800 rounded-2xl text-left transition-all hover:bg-zinc-800 hover:border-zinc-500 active:scale-95 overflow-hidden`}
+                >
+                  <div className="flex items-center gap-4 relative z-10">
+                    <div className={`p-3 rounded-xl bg-black/50 ${card.color} shadow-lg group-hover:scale-110 transition-transform`}>
+                      <Sparkles className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white">{card.name}</div>
+                      <div className="text-[10px] font-bold text-zinc-500 mt-0.5">{card.desc}</div>
+                    </div>
+                  </div>
+                  {/* Decorative Gradient */}
+                  <div className={`absolute inset-0 bg-gradient-to-r ${card.color.includes('red') ? 'from-red-500/5' : card.color.includes('blue') ? 'from-blue-500/5' : 'from-yellow-500/5'} to-transparent opacity-0 group-hover:opacity-100 transition-opacity`} />
+                </button>
+              ))}
+            </div>
+          </ModalWrapper>
+        );
+
       case 'pvp':
         return (
           <ModalWrapper title="통합 투기장" icon={Swords} colorClass="text-red-500" onClose={() => actions.setActiveModal(null)}>
@@ -236,12 +336,25 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
               <div className="flex items-center justify-between text-[11px] text-zinc-500 mt-1"><span>전적 · 순위</span><span className="font-mono">{Number(game.statistics.pvpWins || 0)}승 / {Number(game.statistics.pvpLosses || 0)}패{pvp.user ? ` · #${Math.max(1, pvp.rankings.findIndex(r => r?.uid === pvp.user.uid) + 1)}위` : ''}</span></div>
               <button onClick={actions.quickMatch} disabled={ui.isAnimating} className="w-full mt-3 py-3 bg-red-950/60 hover:bg-red-900 rounded-xl font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50">{ui.isAnimating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" />} 빠른 대전 매칭</button>
             </div>
-            <div className="flex bg-black/40 p-1 rounded-xl mb-4 border border-zinc-800">
+                <div className="flex bg-black/40 p-1 rounded-xl mb-4 border border-zinc-800">
               <button onClick={() => setPvpTab(0)} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all ${pvpTab === 0 ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>순위표</button>
               <button onClick={() => setPvpTab(1)} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all flex items-center justify-center gap-2 ${pvpTab === 1 ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
                 <History className="w-3 h-3" /> 방어 기록
               </button>
             </div>
+
+            {pvpTab === 1 && (
+              <div className="flex justify-end mb-3 px-1">
+                <button 
+                  onClick={() => actions.fetchDefenseLogs(true)} 
+                  disabled={pvp.isFetchingLogs}
+                  className="text-[10px] font-black text-zinc-500 flex items-center gap-1.5 hover:text-white transition-colors"
+                >
+                  {pvp.isFetchingLogs ? <Loader2 className="w-3 h-3 animate-spin" /> : <History className="w-3 h-3" />}
+                  전적 새로고침
+                </button>
+              </div>
+            )}
 
             <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar min-h-[200px]">
               {pvpTab === 0 ? (
@@ -279,8 +392,8 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
                           <div className="text-xs font-bold text-zinc-200">
                             <span className="text-zinc-500 mr-1">Attacked by</span>{log.attackerName}
                           </div>
-                          <div className="text-[9px] text-zinc-500 mt-0.5">
-                            {new Date(log.at).toLocaleString()}
+                          <div className="text-[9px] text-zinc-500 mt-0.5 font-mono">
+                            {new Date(log.at).toLocaleString('en-GB', { hour12: false })}
                           </div>
                         </div>
                         {!log.isWin && (
@@ -359,10 +472,44 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
           <div className="text-[10px] text-zinc-500 mb-4 bg-zinc-950 p-2 rounded-lg border border-zinc-800 text-center">
             매일 오전 00:00에 퀘스트가 초기화됩니다.
           </div>
-          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-            {DAILY_QUESTS.map(q => {
-              const progress = pvp.dailyQuests?.state?.[q.id] || 0;
-              const isClaimed = pvp.dailyQuests?.claimed?.includes(q.id);
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+              {(() => {
+                const allDone = pvp.dailyQuests.length > 0 && pvp.dailyQuests.every(q => q.current >= q.goal);
+                const allClaimed = pvp.dailyQuests.every(q => q.claimed);
+                
+                if (allDone) {
+                  return (
+                    <div className={`p-5 rounded-2xl border-2 mb-4 animate-in zoom-in duration-300 ${allClaimed ? 'bg-zinc-950 border-zinc-900 opacity-60' : 'bg-gradient-to-br from-yellow-900/40 via-amber-900/20 to-zinc-900 border-yellow-500/50 shadow-xl shadow-yellow-900/20'}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className={`p-3 rounded-2xl ${allClaimed ? 'bg-zinc-800' : 'bg-gradient-to-br from-yellow-400 to-amber-600 shadow-lg shadow-yellow-500/50'}`}>
+                            <Sparkles className={`w-6 h-6 ${allClaimed ? 'text-zinc-500' : 'text-white'}`} />
+                          </div>
+                          <div>
+                            <div className="text-sm font-black text-zinc-100">일일 퀘스트 올 클리어!</div>
+                            <div className="text-[10px] text-yellow-500 font-bold">보상: {DAILY_QUEST_ALL_DONE_REWARD.amount.toLocaleString()}G + 강화석 {DAILY_QUEST_ALL_DONE_REWARD.stone}개</div>
+                          </div>
+                        </div>
+                        {allClaimed ? (
+                          <span className="text-xs font-black text-zinc-600">수령 완료</span>
+                        ) : (
+                          <button 
+                            onClick={() => actions.claimDailyQuestReward('ALL')}
+                            className="bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-400 hover:to-amber-500 text-white text-xs font-black px-5 py-2.5 rounded-xl shadow-lg animate-pulse"
+                          >
+                            최종 보상 받기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+              
+              {pvp.dailyQuests.map(q => {
+              const progress = q.current || 0;
+              const isClaimed = q.claimed;
               const isDone = progress >= q.goal;
               const percent = Math.min(100, (progress / q.goal) * 100);
               const Icon = q.icon;
@@ -382,7 +529,7 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
                     {isClaimed ? (
                       <span className="text-[10px] font-black text-zinc-600">수령 완료</span>
                     ) : isDone ? (
-                      <button onClick={() => actions.claimDailyReward(q.id)} className="bg-cyan-500 hover:bg-cyan-400 text-white text-[10px] font-black px-3 py-1.5 rounded-lg shadow-lg shadow-cyan-900/40 animate-bounce">보상 받기</button>
+                      <button onClick={() => actions.claimDailyQuestReward(q.id)} className="bg-cyan-500 hover:bg-cyan-400 text-white text-[10px] font-black px-3 py-1.5 rounded-lg shadow-lg shadow-cyan-900/40 animate-bounce">보상 받기</button>
                     ) : (
                       <span className="text-[10px] font-mono text-zinc-400">{progress} / {q.goal}</span>
                     )}
@@ -396,6 +543,54 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
           </div>
         </ModalWrapper>
       );
+      case 'menu':
+        return (
+          <ModalWrapper title="전체 메뉴" icon={LayoutGrid} colorClass="text-zinc-400" onClose={() => actions.setActiveModal(null)}>
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={() => actions.setActiveModal('achievements')}
+                className="p-4 bg-zinc-800/50 border border-zinc-700 rounded-2xl flex flex-col items-center gap-2 hover:bg-zinc-800 transition-all relative outline-none"
+              >
+                <div className="p-3 bg-yellow-500/10 rounded-xl text-yellow-500"><Trophy className="w-6 h-6" /></div>
+                <span className="text-xs font-black">업적</span>
+                <span className="text-[9px] text-zinc-500 font-bold">보상 및 명예</span>
+                {game.hasNewAchievements && <div className="absolute top-3 right-3 w-2 h-2 bg-red-500 rounded-full animate-bounce" />}
+              </button>
+
+              <button 
+                onClick={() => actions.setActiveModal('rebirth')}
+                className="p-4 bg-zinc-800/50 border border-zinc-700 rounded-2xl flex flex-col items-center gap-2 hover:bg-zinc-800 transition-all outline-none"
+              >
+                <div className="p-3 bg-purple-500/10 rounded-xl text-purple-400"><InfinityIcon className="w-6 h-6" /></div>
+                <span className="text-xs font-black">환생</span>
+                <span className="text-[9px] text-zinc-500 font-bold">한계 돌파</span>
+              </button>
+
+              <button 
+                onClick={() => actions.setActiveModal('security')}
+                className="p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl flex flex-col items-center gap-2 hover:bg-zinc-800 transition-all outline-none"
+              >
+                <div className="p-3 bg-zinc-700/10 rounded-xl text-zinc-400"><Settings className="w-6 h-6" /></div>
+                <span className="text-xs font-black">보안 설정</span>
+                <span className="text-[9px] text-zinc-500 font-bold">PIN 및 계정</span>
+              </button>
+
+              <button 
+                onClick={() => actions.setActiveModal('feedback')}
+                className="p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl flex flex-col items-center gap-2 hover:bg-zinc-800 transition-all outline-none"
+              >
+                <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400"><MessageSquare className="w-6 h-6" /></div>
+                <span className="text-xs font-black">피드백</span>
+                <span className="text-[9px] text-zinc-500 font-bold">건의 및 문의</span>
+              </button>
+            </div>
+            <div className="mt-4 p-3 bg-black/30 rounded-xl border border-zinc-800 flex items-center justify-between text-[10px] text-zinc-600">
+              <span className="font-bold uppercase tracking-widest text-cyan-400/80">System v1.2.4</span>
+              <span className="font-mono italic opacity-50">dev. Jinyoung-King</span>
+            </div>
+          </ModalWrapper>
+        );
+
     default: return null;
     }
   };

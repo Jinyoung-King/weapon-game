@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrainCircuit, ZapOff, Shield, X, Loader2, CheckCircle2 } from 'lucide-react';
+import { BrainCircuit, ZapOff, Shield, X, Loader2, CheckCircle2, LogIn } from 'lucide-react';
 
 export function LoginView({ session, pvp, actions }) {
   const { isOfflineMode } = pvp;
@@ -13,7 +13,7 @@ export function LoginView({ session, pvp, actions }) {
         </div>
       )}
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl animate-in zoom-in">
-        <BrainCircuit className="w-16 h-16 text-blue-500 mx-auto mb-6" />
+        <LogIn className="w-16 h-16 text-blue-500 mx-auto mb-6" />
         <h1 className="text-2xl font-bold text-center mb-2">모험의 서</h1>
         <p className="text-zinc-500 text-center text-sm mb-8">기존 플레이어는 동일한 이름을 입력하여 데이터를 불러오세요.</p>
         <input

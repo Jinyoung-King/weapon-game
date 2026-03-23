@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, MessageSquare, Trophy, Swords, User, Coins, Gem, Infinity as InfinityIcon, ZapOff, BookOpen, LogOut } from 'lucide-react';
+import { Settings, MessageSquare, Trophy, Swords, User, Coins, Gem, Infinity as InfinityIcon, ZapOff, BookOpen, LogOut, LayoutGrid } from 'lucide-react';
 import { DAILY_QUESTS } from '../../config/constants';
 
 export function Header({ session, game, pvp, ui, actions }) {
@@ -7,8 +7,7 @@ export function Header({ session, game, pvp, ui, actions }) {
   const { gold, stones, playerData } = game;
   const { isOfflineMode, dailyQuests } = pvp;
 
-  const hasUnclaimedQuest = dailyQuests && 
-    DAILY_QUESTS.some(q => (dailyQuests.state[q.id] || 0) >= q.goal && !dailyQuests.claimed.includes(q.id));
+  const hasUnclaimedQuest = dailyQuests && dailyQuests.some(q => q.current >= q.goal && !q.claimed);
 
   return (
     <>
@@ -28,18 +27,6 @@ export function Header({ session, game, pvp, ui, actions }) {
             <BookOpen className="w-5 h-5" />
             {hasUnclaimedQuest && <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full animate-bounce" />}
           </button>
-          <button onClick={() => actions.setActiveModal('security')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-300 relative">
-            <Settings className="w-5 h-5" />
-            {hasLocalPin && <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full" />}
-          </button>
-          <button onClick={() => actions.setActiveModal('feedback')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-emerald-300 relative">
-            <MessageSquare className="w-5 h-5" />
-          </button>
-          <button onClick={() => actions.setActiveModal('rebirth')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-purple-400"><InfinityIcon className="w-5 h-5" /></button>
-          <button onClick={() => actions.setActiveModal('achievements')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-yellow-500 relative">
-            <Trophy className="w-5 h-5" />
-            {game.hasNewAchievements && <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full" />}
-          </button>
           <button onClick={() => actions.setActiveModal('pvp')} className="p-2 bg-red-950/40 rounded-lg border border-red-900/50 hover:bg-red-900 text-red-400 relative">
             <Swords className="w-5 h-5" />
             {isOfflineMode && <ZapOff className="w-3 h-3 text-yellow-500 absolute -top-1 -right-1 bg-zinc-900 rounded-full" />}
@@ -48,8 +35,12 @@ export function Header({ session, game, pvp, ui, actions }) {
             <User className="w-5 h-5" />
             {playerData.traitPoints > 0 && <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse" />}
           </button>
-          <button type="button" onClick={() => actions.logout()} title="로그아웃" className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-orange-400">
+          <button type="button" onClick={() => actions.handleLogout()} title="로그아웃" className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-orange-400">
             <LogOut className="w-5 h-5" />
+          </button>
+          <button onClick={() => actions.setActiveModal('menu')} className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-400 relative">
+            <LayoutGrid className="w-5 h-5" />
+            {game.hasNewAchievements && <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full" />}
           </button>
         </div>
       </div>

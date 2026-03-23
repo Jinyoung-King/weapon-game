@@ -5,11 +5,16 @@ import { LoginView } from './game/LoginView';
 import { IntroView } from './game/IntroView';
 import { TraitResultView } from './game/TraitResultView';
 import { Header } from './game/Header';
-import { CombatPanel } from './game/CombatPanel';
-import { EquipmentPanel } from './game/EquipmentPanel';
-import { ActionButtons } from './game/ActionButtons';
 import { ModalManager } from './game/ModalManager';
 import { ScreenSaver } from './game/ScreenSaver';
+import { NavigationBar } from './game/NavigationBar';
+
+// Tab Views
+import { CombatView } from './game/views/CombatView';
+import { ForgeView } from './game/views/ForgeView';
+import { MineView } from './game/views/MineView';
+import { ArchiveView } from './game/views/ArchiveView';
+import { ArenaView } from './game/views/ArenaView';
 
 export function AppView({ state, actions }) {
   const { session, game, combat, pvp, ui } = state;
@@ -34,12 +39,36 @@ export function AppView({ state, actions }) {
     return <TraitResultView game={game} actions={actions} />;
   }
 
+  const renderTabContent = () => {
+    switch (ui.currentTab) {
+      case 'FORGE':
+        return <ForgeView state={state} actions={actions} />;
+      case 'MINE':
+        return <MineView state={state} actions={actions} />;
+      case 'ARCHIVE':
+        return <ArchiveView state={state} actions={actions} />;
+      case 'ARENA':
+        return <ArenaView state={state} actions={actions} />;
+      case 'COMBAT':
+      default:
+        return <CombatView state={state} actions={actions} />;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans p-4 flex flex-col items-center select-none overflow-x-hidden relative">
       <Header session={session} game={game} pvp={pvp} ui={ui} actions={actions} />
-      <CombatPanel combat={combat} actions={actions} />
-      <EquipmentPanel game={game} ui={ui} combat={combat} actions={actions} />
-      <ActionButtons game={game} ui={ui} combat={combat} actions={actions} />
+      
+      <main className="w-full flex-grow flex flex-col items-center">
+        {renderTabContent()}
+      </main>
+
+      <NavigationBar 
+        currentTab={ui.currentTab} 
+        setCurrentTab={actions.setCurrentTab} 
+        hasNewAchievements={game.hasNewAchievements} 
+      />
+
       <ModalManager session={session} game={game} combat={combat} pvp={pvp} ui={ui} actions={actions} />
       <ScreenSaver ui={ui} actions={actions} />
     </div>

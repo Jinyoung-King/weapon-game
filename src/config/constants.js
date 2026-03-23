@@ -1,6 +1,6 @@
 import { 
   Sword, Coins, Hammer, Pickaxe, Target, Circle, 
-  Shirt, Ghost, Skull, ShieldAlert, Flame, Crown, Swords
+  Shirt, Ghost, Skull, ShieldAlert, Flame, Crown, Swords, Wind, Zap
 } from 'lucide-react';
 
 export const SAVE_PREFIX = 'JINY_SAVE_V4_';
@@ -78,10 +78,27 @@ export const RELICS_CONFIG = {
 };
 
 export const BOSS_LIST = [
-  { name: '떠돌이 고블린', icon: Ghost, maxHp: 150, rewardGold: 300, rewardStone: 2, color: 'text-green-500' },
-  { name: '동굴 트롤', icon: Skull, maxHp: 800, rewardGold: 1000, rewardStone: 5, color: 'text-gray-400' },
-  { name: '타락한 기사', icon: ShieldAlert, maxHp: 3500, rewardGold: 4000, rewardStone: 12, color: 'text-blue-500' },
-  { name: '화염의 드래곤', icon: Flame, maxHp: 15000, rewardGold: 15000, rewardStone: 30, color: 'text-red-500' }
+  { name: '슬라임', icon: Circle, maxHp: 100, rewardGold: 200, rewardStone: 1, color: 'text-green-400' },
+  { name: '대지 정령', icon: Wind, maxHp: 500, rewardGold: 800, rewardStone: 3, color: 'text-emerald-500' },
+  { name: '스켈레톤 워리어', icon: Skull, maxHp: 2000, rewardGold: 2500, rewardStone: 8, color: 'text-gray-300' },
+  { name: '유령 기사', icon: Ghost, maxHp: 8000, rewardGold: 7000, rewardStone: 15, color: 'text-blue-200' },
+  { name: '가디언 골렘', icon: ShieldAlert, maxHp: 25000, rewardGold: 15000, rewardStone: 30, color: 'text-amber-600' },
+  { name: '지옥의 불꽃', icon: Flame, maxHp: 75000, rewardGold: 45000, rewardStone: 60, color: 'text-red-500' },
+  { name: '심연의 군주', icon: Crown, maxHp: 200000, rewardGold: 120000, rewardStone: 150, color: 'text-purple-600' },
+  { name: '투신 아레스', icon: Swords, maxHp: 800000, rewardGold: 350000, rewardStone: 400, color: 'text-red-700' }
+];
+
+export const SKILLS = [
+  { id: 'SMASH', name: '질풍 베기', icon: Swords, cost: 20, type: 'damage', multiplier: 5, color: 'text-red-400', desc: '강한 일격으로 공격력의 500% 데미지' },
+  { id: 'FOCUS', name: '자세 가다듬기', icon: Target, cost: 35, type: 'buff', effect: 'crit_bonus', duration: 10000, color: 'text-cyan-400', desc: '10초 동안 크리티컬 확률 +30%' },
+  { id: 'MEDITATE', name: '급속 재생', icon: Zap, cost: 10, type: 'regen', amount: 50, color: 'text-yellow-400', desc: '마나 즉시 회복 50' }
+];
+
+export const ROGUELIKE_BUFF_POOL = [
+  { id: 'ATK_UP', name: '불의 권능', desc: '공격력 +10%', effect: 'damage_bonus_p', value: 0.1, color: 'text-red-400' },
+  { id: 'CRIT_UP', name: '심판의 눈', desc: '크리티컬 데미지 +20%', effect: 'crit_dmg_p', value: 0.2, color: 'text-yellow-400' },
+  { id: 'MANA_UP', name: '지혜의 축복', desc: '마나 회복 주기 단축', effect: 'mana_regen_p', value: 0.5, color: 'text-blue-400' },
+  { id: 'LUCK_UP', name: '행운의 여신', desc: '골드/강화석 획득 +5%', effect: 'farm_bonus_p', value: 0.05, color: 'text-emerald-400' }
 ];
 
 export const DAILY_QUESTS = [
@@ -90,3 +107,5 @@ export const DAILY_QUESTS = [
   { id: 'ENHANCE', name: '장비 강화 시도 (15회)', goal: 15, reward: { type: 'stone', amount: 30 }, icon: Hammer },
   { id: 'MINING', name: '채광 시도 (100회)', goal: 100, reward: { type: 'stone', amount: 15 }, icon: Pickaxe }
 ];
+
+export const DAILY_QUEST_ALL_DONE_REWARD = { amount: 50000, stone: 30 };
