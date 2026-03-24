@@ -6,12 +6,13 @@ import { signInAnonymously } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { hashPin, verifyPin } from '../../utils/cryptoUtils';
 import { getStoredPinRecord, getPinKey } from '../../utils/gameUtils';
-import { PBKDF2_ITERATIONS } from '../../config/constants';
+import { PBKDF2_ITERATIONS, PERSONALITY_QUESTIONS } from '../../config/constants';
 
 export function useAuthHandlers({ state, setters, utils }) {
   const { auth: authState, ui } = state;
   const { setAppState, setPlayerName, addLog, loadGameFromSave } = utils;
   const { setIsLoggingIn, setQuestionIndex, setIntroVotes, setPendingLogin, setPinPrompt, setPinSettings } = setters.auth;
+  const { setTraits } = setters.game;
   const { setUser } = setters.pvp; // pvp is social.setters in bundle
 
   const handleLogin = async (name) => {
@@ -165,14 +166,32 @@ export function useAuthHandlers({ state, setters, utils }) {
     addLog('[시스템] 로그아웃 되었습니다.', 'info');
   };
 
-  const handleIntroSelection = (selectionId) => {
-    setIntroVotes(prev => [...prev, selectionId]);
-    setQuestionIndex(q => q + 1);
+  const nextIntroQuestion = (newVotes) => {
+    setIntroVotes(newVotes);
+    if (newVotes.length >= PERSONALITY_QUESTIONS.length) {
+      const counts = {};
+      newVotes.forEach(trait => { counts[trait.id] = (counts[trait.id] || 0) + 1; });
+      const top2 = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([id]) => newVotes.find(t => t.id === id));
+      setTraits(top2);
+      setAppState('trait_result');
+    } else {
+      setQuestionIndex(newVotes.length);
+    }
   };
 
-  return { 
-    handleLogin, 
-    handleIntroSelection, 
+  const resetIntro = () => {
+    setIntroVotes([]);
+    setQuestionIndex(0);
+    setAppState('intro');
+  };
+
+  return {
+    handleLogin,
+    nextIntroQuestion,
+    resetIntro,
     setPinPromptValue, 
     closePinPrompt, 
     confirmPinLogin, 
