@@ -67,6 +67,21 @@ export function useGameLogic() {
     return Math.floor((100 + levelAtk + weaponAtk + atkAllocated) * (1 + dmgBonus) * relicDmg);
   }, [economy.state, activeBuffs]);
 
+  const playerMaxHealth = useMemo(() => {
+    const levelHp = economy.state.playerData.level * 50;
+    const armorHp = economy.state.equipment.armor * 100;
+    const hpBonus = activeBuffs.filter(b => b.effect === 'hp_bonus_p').reduce((acc, b) => acc + b.value, 0);
+    return Math.floor((500 + levelHp + armorHp) * (1 + hpBonus));
+  }, [economy.state.playerData.level, economy.state.equipment.armor, activeBuffs]);
+
+  // Sync playerMaxHp
+  useEffect(() => {
+    combat.setters.setPlayerMaxHp(playerMaxHealth);
+    if (combat.state.playerHp === 100 || combat.state.playerHp === 0) {
+      combat.setters.setPlayerHp(playerMaxHealth);
+    }
+  }, [playerMaxHealth]);
+
   const hasLocalPin = useMemo(() => !!localStorage.getItem(getPinKey(ui.state.playerName)), [ui.state.playerName]);
 
   const hasNewAchievements = useMemo(() => {
@@ -273,8 +288,8 @@ export function useGameLogic() {
       const regenRate = 2 * (1 + (activeBuffs.find(b => b.effect === 'mana_regen_p')?.value || 0));
       combat.setters.setMana(m => Math.min(combat.state.maxMana, m + regenRate));
 
-      // Auto Attack (from Handlers)
-      combatHandlers.handleAttack();
+      // Auto Attack (Turn-based: Disabled auto-attack to wait for player input)
+      // combatHandlers.handleAttack();
 
       // Auto Mining (3s interval)
       miningTickerRef.current += 1;

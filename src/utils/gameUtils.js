@@ -96,15 +96,22 @@ export const getStoredPinRecord = (name) => {
 };
 
 export const getBossConfig = (stage) => {
-  if (stage < BOSS_LIST.length) return BOSS_LIST[stage];
-  const overStage = stage - BOSS_LIST.length + 1;
+  const bosses = [
+    { name: '블루 슬라임', image: '/assets/slime.png', maxHp: 100, dmg: 5, rewardGold: 200, rewardStone: 1, color: 'text-blue-400' },
+    { name: '고대 골렘', image: '/assets/golem.png', maxHp: 500, dmg: 12, rewardGold: 800, rewardStone: 3, color: 'text-amber-600' },
+    { name: '심연의 파편', image: '/assets/golem.png', maxHp: 2000, dmg: 25, rewardGold: 2500, rewardStone: 8, color: 'text-fuchsia-500' }
+  ];
+
+  if (stage < bosses.length) return bosses[stage];
+  
+  const overStage = stage - bosses.length + 1;
   return {
-    name: `심연의 파편 (Lv.${overStage})`,
-    icon: Crown,
-    maxHp: Math.floor(15000 * Math.pow(1.8, overStage)),
-    rewardGold: 20000 + 10000 * overStage,
-    rewardStone: 40 + 10 * overStage,
-    color: "text-fuchsia-500",
+    name: `심연의 군주 (Lv.${overStage})`,
+    image: '/assets/golem.png',
+    maxHp: Math.floor(25000 * Math.pow(1.8, overStage)),
+    rewardGold: 50000 + 20000 * overStage,
+    rewardStone: 100 + 50 * overStage,
+    color: "text-red-700",
   };
 };
 

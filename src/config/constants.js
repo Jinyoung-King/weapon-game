@@ -78,27 +78,31 @@ export const RELICS_CONFIG = {
 };
 
 export const BOSS_LIST = [
-  { name: '슬라임', icon: Circle, maxHp: 100, rewardGold: 200, rewardStone: 1, color: 'text-green-400' },
-  { name: '대지 정령', icon: Wind, maxHp: 500, rewardGold: 800, rewardStone: 3, color: 'text-emerald-500' },
-  { name: '스켈레톤 워리어', icon: Skull, maxHp: 2000, rewardGold: 2500, rewardStone: 8, color: 'text-gray-300' },
-  { name: '유령 기사', icon: Ghost, maxHp: 8000, rewardGold: 7000, rewardStone: 15, color: 'text-blue-200' },
-  { name: '가디언 골렘', icon: ShieldAlert, maxHp: 25000, rewardGold: 15000, rewardStone: 30, color: 'text-amber-600' },
-  { name: '지옥의 불꽃', icon: Flame, maxHp: 75000, rewardGold: 45000, rewardStone: 60, color: 'text-red-500' },
-  { name: '심연의 군주', icon: Crown, maxHp: 200000, rewardGold: 120000, rewardStone: 150, color: 'text-purple-600' },
-  { name: '투신 아레스', icon: Swords, maxHp: 800000, rewardGold: 350000, rewardStone: 400, color: 'text-red-700' }
+  { name: '슬라임', icon: Circle, maxHp: 100, dmg: 5, rewardGold: 200, rewardStone: 1, color: 'text-green-400' },
+  { name: '대지 정령', icon: Wind, maxHp: 500, dmg: 12, rewardGold: 800, rewardStone: 3, color: 'text-emerald-500' },
+  { name: '스켈레톤 워리어', icon: Skull, maxHp: 2000, dmg: 25, rewardGold: 2500, rewardStone: 8, color: 'text-gray-300' },
+  { name: '유령 기사', icon: Ghost, maxHp: 8000, dmg: 50, rewardGold: 7000, rewardStone: 15, color: 'text-blue-200' },
+  { name: '가디언 골렘', icon: ShieldAlert, maxHp: 25000, dmg: 120, rewardGold: 15000, rewardStone: 30, color: 'text-amber-600' },
+  { name: '지옥의 불꽃', icon: Flame, maxHp: 75000, dmg: 250, rewardGold: 45000, rewardStone: 60, color: 'text-red-500' },
+  { name: '심연의 군주', icon: Crown, maxHp: 200000, dmg: 500, rewardGold: 120000, rewardStone: 150, color: 'text-purple-600' },
+  { name: '투신 아레스', icon: Swords, maxHp: 800000, dmg: 1200, rewardGold: 350000, rewardStone: 400, color: 'text-red-700' }
+];
+
+export const PASSIVE_SKILLS = [
+  { id: 'BLOOD_LUST', name: '피의 갈증', icon: Flame, effect: 'lifesteal', value: 0.1, desc: '공격 시 데미지의 10%만큼 체력 회복' }
 ];
 
 export const SKILLS = [
-  { id: 'SMASH', name: '질풍 베기', icon: Swords, cost: 20, type: 'damage', multiplier: 5, color: 'text-red-400', desc: '강한 일격으로 공격력의 500% 데미지' },
-  { id: 'FOCUS', name: '자세 가다듬기', icon: Target, cost: 35, type: 'buff', effect: 'crit_bonus', duration: 10000, color: 'text-cyan-400', desc: '10초 동안 크리티컬 확률 +30%' },
-  { id: 'MEDITATE', name: '급속 재생', icon: Zap, cost: 10, type: 'regen', amount: 50, color: 'text-yellow-400', desc: '마나 즉시 회복 50' }
+  { id: 'SMASH', name: '폭풍 베기', icon: Swords, cost: 25, type: 'damage', multiplier: 6, color: 'text-red-400', desc: '강력한 연속 베기로 공격력의 600% 데미지' },
+  { id: 'HEAL', name: '성스러운 빛', icon: Zap, cost: 40, type: 'heal', amount: 0.3, color: 'text-green-400', desc: '신성한 힘으로 최대 체력의 30% 회복' },
+  { id: 'SHIELD', name: '절대 방어', icon: ShieldAlert, cost: 30, type: 'buff', effect: 'defense_bonus', value: 0.5, duration: 15000, color: 'text-blue-400', desc: '15초 동안 받는 데미지 50% 감소' }
 ];
 
 export const ROGUELIKE_BUFF_POOL = [
-  { id: 'ATK_UP', name: '불의 권능', desc: '공격력 +10%', effect: 'damage_bonus_p', value: 0.1, color: 'text-red-400' },
-  { id: 'CRIT_UP', name: '심판의 눈', desc: '크리티컬 데미지 +20%', effect: 'crit_dmg_p', value: 0.2, color: 'text-yellow-400' },
-  { id: 'MANA_UP', name: '지혜의 축복', desc: '마나 회복 주기 단축', effect: 'mana_regen_p', value: 0.5, color: 'text-blue-400' },
-  { id: 'LUCK_UP', name: '행운의 여신', desc: '골드/강화석 획득 +5%', effect: 'farm_bonus_p', value: 0.05, color: 'text-emerald-400' }
+  { id: 'ATK_UP', name: '불의 권능', desc: '공격력 +15%', effect: 'damage_bonus_p', value: 0.15, color: 'text-red-400' },
+  { id: 'HP_UP', name: '생명의 숨결', desc: '최대 체력 +20%', effect: 'hp_bonus_p', value: 0.2, color: 'text-green-400' },
+  { id: 'CRIT_UP', name: '심판의 눈', desc: '크리티컬 데미지 +30%', effect: 'crit_dmg_p', value: 0.3, color: 'text-yellow-400' },
+  { id: 'MANA_UP', name: '지혜의 축복', desc: '마나 회복량 +50%', effect: 'mana_regen_p', value: 0.5, color: 'text-blue-400' }
 ];
 
 export const DAILY_QUESTS = [
