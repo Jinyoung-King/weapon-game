@@ -15,6 +15,10 @@ export function useUiState() {
   
   const [isMining, setIsMining] = useState(false);
   const [mineCharge, setMineCharge] = useState(0);
+
+  const [feedbackDraft, setFeedbackDraft] = useState('');
+  const [isPostingFeedback, setIsPostingFeedback] = useState(false);
+  const [feedbackItems, setFeedbackItems] = useState([]);
   
   const [statistics, setStatistics] = useState({
     totalGoldEarned: 1000,
@@ -36,12 +40,14 @@ export function useUiState() {
     state: { 
       appState, playerName, logs, activeModal, selectedEquip, isAnimating, currentTab, 
       uiSettings, isScreenSaver, screenSaverLocked,
-      isMining, mineCharge, statistics, achievementLevels, viewedAchievementLevels, idleRewardSummary
+      isMining, mineCharge, statistics, achievementLevels, viewedAchievementLevels, idleRewardSummary,
+      feedbackDraft, isPostingFeedback, feedbackItems
     },
     setters: { 
       setAppState, setPlayerName, setLogs, setActiveModal, setSelectedEquip, setIsAnimating, 
       setCurrentTab, setUiSettings, setIsScreenSaver, setScreenSaverLocked,
-      setIsMining, setMineCharge, setStatistics, setAchievementLevels, setViewedAchievementLevels, setIdleRewardSummary
+      setIsMining, setMineCharge, setStatistics, setAchievementLevels, setViewedAchievementLevels, setIdleRewardSummary,
+      setFeedbackDraft, setIsPostingFeedback, setFeedbackItems
     },
     refs: { idleTimerRef }
   };

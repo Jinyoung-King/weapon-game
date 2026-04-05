@@ -35,7 +35,7 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
 
   useEffect(() => {
     if (activeModal === 'pvp' && pvpTab === 1) {
-      actions.fetchDefenseLogs();
+      actions.fetchPvpLogs();
     }
   }, [activeModal, pvpTab]);
 
@@ -339,19 +339,19 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
                 <div className="flex bg-black/40 p-1 rounded-xl mb-4 border border-zinc-800">
               <button onClick={() => setPvpTab(0)} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all ${pvpTab === 0 ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>순위표</button>
               <button onClick={() => setPvpTab(1)} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all flex items-center justify-center gap-2 ${pvpTab === 1 ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                <History className="w-3 h-3" /> 방어 기록
+                <History className="w-3 h-3" /> 전적 기록
               </button>
             </div>
 
             {pvpTab === 1 && (
               <div className="flex justify-end mb-3 px-1">
                 <button 
-                  onClick={() => actions.fetchDefenseLogs(true)} 
+                  onClick={() => actions.fetchPvpLogs(true)} 
                   disabled={pvp.isFetchingLogs}
                   className="text-[10px] font-black text-zinc-500 flex items-center gap-1.5 hover:text-white transition-colors"
                 >
                   {pvp.isFetchingLogs ? <Loader2 className="w-3 h-3 animate-spin" /> : <History className="w-3 h-3" />}
-                  전적 새로고침
+                  기록 새로고침
                 </button>
               </div>
             )}
@@ -381,25 +381,28 @@ export function ModalManager({ session, game, combat, pvp, ui, actions }) {
                         <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">불러오는 중...</span>
                       </div>
                   ) : pvp.defenseLogs.length === 0 ? (
-                    <div className="text-center text-zinc-600 text-sm py-20 italic">아직 방어 기록이 없습니다.</div>
+                    <div className="text-center text-zinc-600 text-sm py-20 italic">아직 전적 기록이 없습니다.</div>
                   ) : (
                     pvp.defenseLogs.map((log) => (
                       <div key={log.id} className="flex items-center gap-3 p-3 rounded-xl bg-zinc-950 border border-zinc-800">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${log.isWin ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
-                          {log.isWin ? <Shield className="w-4 h-4" /> : <Skull className="w-4 h-4" />}
+                          {log.type === 'attack' ? <Swords className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
                         </div>
                         <div className="flex-1">
                           <div className="text-xs font-bold text-zinc-200">
-                            <span className="text-zinc-500 mr-1">Attacked by</span>{log.attackerName}
+                            <span className="text-zinc-500 mr-1">{log.type === 'attack' ? 'Challenger' : 'Defender'}:</span>{log.oppName || 'Unknown'}
+                            <span className={`ml-2 text-[9px] px-1.5 rounded ${log.isWin ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                              {log.isWin ? '승리' : '패배'}
+                            </span>
                           </div>
                           <div className="text-[9px] text-zinc-500 mt-0.5 font-mono">
-                            {new Date(log.at).toLocaleString('en-GB', { hour12: false })}
+                            {new Date(log.at).toLocaleString()} {log.pointDelta !== undefined ? `(${log.pointDelta > 0 ? '+' : ''}${log.pointDelta} AP)` : ''}
                           </div>
                         </div>
                         {!log.isWin && (
                           <button 
                             onClick={() => {
-                              const opp = pvp.rankings.find(r => r.uid === log.attackerId) || { uid: log.attackerId, name: log.attackerName, combatPower: log.myCombatPower };
+                              const opp = pvp.rankings.find(r => r.uid === log.oppId) || { uid: log.oppId, name: log.oppName, combatPower: log.oppCombatPower };
                               actions.setPvpOpponent(opp);
                             }}
                             className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[10px] font-black shadow-lg shadow-red-900/40"

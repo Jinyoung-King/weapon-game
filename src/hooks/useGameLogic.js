@@ -113,12 +113,20 @@ export function useGameLogic() {
   };
 
   const getFullStateToSave = useCallback(() => {
+    // Exclude non-serializable things like the Firebase User object
+    const socialToSave = { ...social.state };
+    delete socialToSave.user;
+
+    const authToSave = { ...auth.state };
+    // pendingLogin might contain a user object, clear it too
+    delete authToSave.pendingLogin;
+
     return {
       ...economy.state,
       ...combat.state,
-      ...social.state,
+      ...socialToSave,
       ...ui.state,
-      ...auth.state,
+      ...authToSave,
       lastSavedAt: Date.now()
     };
   }, [economy.state, combat.state, social.state, ui.state, auth.state]);
@@ -156,12 +164,6 @@ export function useGameLogic() {
     } else {
       normalizedQuests = DAILY_QUESTS.map(q => ({ ...q, current: 0, claimed: false }));
     }
-    social.setters.setDailyQuests(normalizedQuests);
-    social.setters.setPvpHistory(data.pvpHistory || []);
-    ui.setters.setStatistics(data.statistics || { totalGoldEarned: 0, bossesDefeated: 0, totalClicks: 0, pvpWins: 0, pvpLosses: 0, arenaPoints: 1000, lastPvpAt: 0 });
-    ui.setters.setAchievementLevels(data.achievementLevels || {});
-    ui.setters.setViewedAchievementLevels(data.viewedAchievementLevels || {});
-
     social.setters.setDailyQuests(normalizedQuests);
     social.setters.setPvpHistory(data.pvpHistory || []);
     ui.setters.setStatistics(data.statistics || { totalGoldEarned: 0, bossesDefeated: 0, totalClicks: 0, pvpWins: 0, pvpLosses: 0, arenaPoints: 1000, lastPvpAt: 0 });
@@ -369,12 +371,33 @@ export function useGameLogic() {
     }
   }, [ui.state.statistics, economy.state.playerData.level, economy.state.equipment, ui.state.appState]);
 
-  // 자동 카드 선택 모달 팝업
+  // 통합 모달 처리 효과
   useEffect(() => {
-    if (combat.state.pendingCards && combat.state.pendingCards.length > 0 && ui.state.activeModal !== 'card_selection') {
+    if (!ui.state.activeModal) return;
+
+    if (ui.state.activeModal === 'feedback') {
+        socialHandlers.fetchFeedback();
+    } else if (ui.state.activeModal === 'pvp') {
+        socialHandlers.fetchRankings();
+        socialHandlers.fetchPvpLogs();
+    } else if (ui.state.activeModal === 'achievements') {
+        ui.setters.setViewedAchievementLevels({ ...ui.state.achievementLevels });
+    }
+  }, [ui.state.activeModal]);
+
+  // 대결 모달 전환 조건부 효과
+  useEffect(() => {
+    if (social.state.pvpOpponent && ui.state.activeModal !== 'pvp_clash') {
+        ui.setters.setActiveModal('pvp_clash');
+    }
+  }, [social.state.pvpOpponent, ui.state.activeModal]);
+
+  // 자동 카드 선택 모달 (보너스 선택)
+  useEffect(() => {
+    if (combat.state.pendingCards?.length > 0 && ui.state.activeModal !== 'card_selection') {
       ui.setters.setActiveModal('card_selection');
     }
-  }, [combat.state.pendingCards, ui.state.activeModal, ui.setters.setActiveModal]);
+  }, [combat.state.pendingCards, ui.state.activeModal]);
 
   // Unified actions object
   // UI 컴포넌트들(ModalManager, ActionButtons 등)에서 기대하는 함수 이름으로 명시적 매핑을 수행합니다.
@@ -394,18 +417,21 @@ export function useGameLogic() {
 
     // Social & Auth
     ...socialHandlers,
+    fetchPvpLogs: socialHandlers.fetchPvpLogs,
     ...authHandlers,
 
     // UI
     setCurrentTab: ui.setters.setCurrentTab,
     setActiveModal: (modal) => {
-        if (modal === 'achievements') {
-          ui.setters.setViewedAchievementLevels({ ...ui.state.achievementLevels });
+        if (ui.state.activeModal === 'pvp_clash' && modal !== 'pvp_clash') {
+          social.setters.setPvpOpponent(null);
+          social.setters.setPvpResult(null);
         }
         ui.setters.setActiveModal(modal);
     },
     setSelectedEquip: ui.setters.setSelectedEquip,
     setAppState: ui.setters.setAppState,
+    setFeedbackDraft: ui.setters.setFeedbackDraft,
     addLog
   };
 

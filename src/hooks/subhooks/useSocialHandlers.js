@@ -11,6 +11,7 @@ export function useSocialHandlers({ state, setters, utils }) {
   const { setGold, setStones, setSoulStones, setPlayerData, setEquipment, setAppraisals, setAllocatedStats, setTraits, setRelics, setFailStack, setStatistics, setAchievementLevels } = setters.game;
   const { setStage, setBossHp, setMana, setMaxMana, setRunBuffs, setTempBuffs, setIsAttacking } = setters.combat;
   const { setIsSyncing, setRankings, setDailyQuests, setPvpResult, setPvpOpponent, setDefenseLogs, setIsFetchingLogs, setLastRankingsFetch, setLastDefenseFetch } = setters.pvp;
+  const { setFeedbackDraft, setIsPostingFeedback, setFeedbackItems, setIsAnimating } = setters.ui;
   const { addLog, getFullStateToSave } = utils;
 
   const syncCloudSave = useCallback(async () => {
@@ -22,7 +23,15 @@ export function useSocialHandlers({ state, setters, utils }) {
       await setDoc(profileRef, { state: stateData, lastSavedAt: serverTimestamp(), uid: pvp.user.uid }, { merge: true });
       
       const pvpRankRef = doc(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks', pvp.user.uid);
-      await setDoc(pvpRankRef, { uid: pvp.user.uid, name: ui.playerName, level: game.playerData.level, cp: combat.myCombatPower, lastActive: serverTimestamp() }, { merge: true });
+      await setDoc(pvpRankRef, { 
+        uid: pvp.user.uid, 
+        name: ui.playerName, 
+        level: game.playerData.level, 
+        weaponLevel: game.equipment.weapon,
+        combatPower: combat.myCombatPower, 
+        arenaPoints: ui.statistics.arenaPoints || 1000,
+        lastActive: serverTimestamp() 
+      }, { merge: true });
     } catch (err) {
       console.error('Sync failed:', err);
     } finally {
@@ -82,7 +91,7 @@ export function useSocialHandlers({ state, setters, utils }) {
     }
 
     try {
-      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks'), orderBy('cp', 'desc'), limit(50));
+      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'pvp_ranks'), orderBy('combatPower', 'desc'), limit(50));
       const snap = await getDocs(q);
       const list = snap.docs.map(d => d.data());
       setRankings(list);
@@ -92,19 +101,19 @@ export function useSocialHandlers({ state, setters, utils }) {
     }
   }, [pvp.isOfflineMode, pvp.lastRankingsFetch, pvp.rankings.length, setRankings, setLastRankingsFetch]);
 
-  const fetchDefenseLogs = useCallback(async (force = false) => {
+  const fetchPvpLogs = useCallback(async (force = false) => {
     if (pvp.isOfflineMode || !pvp.user) return;
     
     const now = Date.now();
     if (!force && now - pvp.lastDefenseFetch < 300000 && pvp.defenseLogs.length > 0) {
-      console.log('[Firestore] Fetch Defense Logs Skipped (Cached)');
+      console.log('[Firestore] Fetch PvP Logs Skipped (Cached)');
       return;
     }
 
     setIsFetchingLogs(true);
     try {
       const q = query(
-        collection(db, 'artifacts', appId, 'public', 'data', 'profiles', ui.playerName, 'defense_logs'),
+        collection(db, 'artifacts', appId, 'public', 'data', 'profiles', ui.playerName, 'pvp_logs'),
         orderBy('at', 'desc'),
         limit(20)
       );
@@ -112,7 +121,7 @@ export function useSocialHandlers({ state, setters, utils }) {
       setDefenseLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setLastDefenseFetch(now);
     } catch (err) {
-      console.error('Fetch Defense Logs Error:', err);
+      console.error('Fetch PvP Logs Error:', err);
     } finally {
       setIsFetchingLogs(false);
     }
@@ -125,7 +134,7 @@ export function useSocialHandlers({ state, setters, utils }) {
     
     // Simple matching: pick someone within +/- 30% of our CP
     const myCP = combat.myCombatPower;
-    const candidates = pvp.rankings.filter(r => r.uid !== pvp.user.uid && r.cp > myCP * 0.7 && r.cp < myCP * 1.5);
+    const candidates = pvp.rankings.filter(r => r.uid !== pvp.user.uid && (r.combatPower || r.cp) > myCP * 0.7 && (r.combatPower || r.cp) < myCP * 1.5);
     
     if (candidates.length > 0) {
       const target = candidates[Math.floor(Math.random() * candidates.length)];
@@ -143,15 +152,134 @@ export function useSocialHandlers({ state, setters, utils }) {
     }
   };
 
+  const fetchFeedback = useCallback(async () => {
+    if (pvp.isOfflineMode) return;
+    try {
+      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'feedback'), orderBy('clientAt', 'desc'), limit(30));
+      const snap = await getDocs(q);
+      setFeedbackItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      console.error('Fetch Feedback Error:', err);
+    }
+  }, [pvp.isOfflineMode, setFeedbackItems]);
+
+  const postFeedback = async () => {
+    if (pvp.isOfflineMode || !ui.feedbackDraft.trim() || ui.isPostingFeedback) return;
+    setIsPostingFeedback(true);
+    try {
+      const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'feedback'));
+      await setDoc(docRef, {
+        name: ui.playerName,
+        text: ui.feedbackDraft,
+        clientAt: Date.now(),
+        uid: pvp.user?.uid || 'anonymous'
+      });
+      setFeedbackDraft('');
+      addLog('[피드백] 소중한 의견 감사합니다!', 'success');
+      await fetchFeedback();
+    } catch (err) {
+      console.error('Post Feedback Error:', err);
+      addLog('피드백 등록 실패', 'danger');
+    } finally {
+      setIsPostingFeedback(false);
+    }
+  };
+
+  const executePvp = async () => {
+    if (!pvp.pvpOpponent || ui.isAnimating) return;
+    
+    setIsAnimating(true);
+    addLog(`[전투] ${pvp.pvpOpponent.name}님과 대결을 시작합니다!`, 'info');
+    
+    // 쿨타임 업데이트용 통계 기록
+    setStatistics(prev => ({ ...prev, lastPvpAt: Date.now() }));
+
+    // 1.5초 후 결과 계산 (애니메이션 효과 연출을 위해)
+    setTimeout(async () => {
+      const myCP = combat.myCombatPower;
+      const oppCP = pvp.pvpOpponent.combatPower || pvp.pvpOpponent.cp || 0;
+      
+      // 승률 계산: 기본 50% + 내 전투력이 높으면 가산, 낮으면 감산 (최소 5%, 최대 95%)
+      const winChance = Math.max(0.05, Math.min(0.95, 0.5 + (myCP - oppCP) / (myCP + oppCP + 1)));
+      const isWin = Math.random() < winChance;
+      
+      const pointDelta = isWin ? 25 : -15;
+      const rewardGold = isWin ? Math.floor(oppCP * 0.1) : 0;
+      
+      const result = { isWin, pointDelta, rewardGold };
+      setPvpResult(result);
+      
+      // 내 정보 갱신
+      if (isWin) {
+        setGold(g => g + rewardGold);
+        setStatistics(prev => ({ 
+          ...prev, 
+          pvpWins: (prev.pvpWins || 0) + 1,
+          arenaPoints: Math.max(0, (prev.arenaPoints || 1000) + pointDelta)
+        }));
+        addLog(`[투기장] 승리! +${pointDelta} AP / +${rewardGold}G 획득`, 'success');
+        updateQuestProgress('pvp_master', 1);
+      } else {
+        setStatistics(prev => ({ 
+          ...prev, 
+          pvpLosses: (prev.pvpLosses || 0) + 1,
+          arenaPoints: Math.max(0, (prev.arenaPoints || 1000) + pointDelta)
+        }));
+        addLog(`[투기장] 패배... ${pointDelta} AP`, 'danger');
+      }
+
+      // 전적 기록 남기기 (나-공격자 & 상대-방어자)
+      if (!pvp.isOfflineMode) {
+        try {
+          const now = Date.now();
+          // 내 기록 (공격)
+          const myLogRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'profiles', ui.playerName, 'pvp_logs'));
+          await setDoc(myLogRef, {
+            type: 'attack',
+            oppId: pvp.pvpOpponent.uid,
+            oppName: pvp.pvpOpponent.name,
+            oppCombatPower: oppCP,
+            myCombatPower: myCP,
+            isWin: isWin,
+            pointDelta,
+            rewardGold,
+            at: now
+          });
+
+          // 상대 기록 (방어)
+          const oppLogRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'profiles', pvp.pvpOpponent.name, 'pvp_logs'));
+          await setDoc(oppLogRef, {
+            type: 'defense',
+            oppId: pvp.user?.uid || 'unknown',
+            oppName: ui.playerName,
+            oppCombatPower: myCP,
+            myCombatPower: oppCP,
+            isWin: !isWin, // 상대방 입장에서는 패배/승리가 반대
+            at: now
+          });
+        } catch (err) {
+          console.error('Record PvP log fail:', err);
+        }
+      }
+
+      setIsAnimating(false);
+      // 기록 갱신 호출 (캐시 무시)
+      await fetchPvpLogs(true);
+    }, 1500);
+  };
+
   return { 
     syncCloudSave, 
     handleRebirth, 
     updateQuestProgress, 
     claimDailyQuestReward,
     fetchRankings,
-    fetchDefenseLogs,
+    fetchPvpLogs,
     quickMatch,
     setPvpOpponent,
-    setPvpResult
+    setPvpResult,
+    fetchFeedback,
+    postFeedback,
+    executePvp
   };
 }
